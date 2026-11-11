@@ -115,9 +115,28 @@ final class DnsMessage
     // »звестный вектор: полный запрос www.example.com/A с EDNS
     $known = DnsMessage::query('www.example.com', 1);
     $known->header->id = 0x1234;
-    $expected = '12 34 01 00 00 01 00 00 00 00 00 01'
-          . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
-          . ' 00 00 29 10 00 00 00 00 00 00';
+
+    $expected = Binary(<<<HereDoc
+      1234 // id
+      0100 // TODO: ? qr=1, opcode:4=0, aa, tc, rd;  z, ad, cd, rcode:4=0
+      0001 // qdCount
+      0000 // anCount
+      0000 // nsCount
+      0001 // arCount
+      // Question:
+      03 77 77 77              // www
+      07 65 78 61 6D 70 6C 65  // example
+      03 63 6F 6D              // com
+      00                       // 0-end name
+      00 01 // type
+      00 01 // class
+      // Additional:
+      00     // 0-end name
+      00 29  // Type=41 -- opt
+      10 00  // class = udpSize
+      00 00 00 00  // ttl = 0?
+      00 00        // len??? 2bytes
+    HereDoc);
     $t->eq(hexs($known->serialize()), $expected, 'DnsMessage: известный вектор запроса');
 
   
@@ -137,6 +156,7 @@ final class DnsMessage
     
     $t->throws(fn() => DnsMessage::deserialize(substr($wire1, 0, 5)), 'DnsMessage: обрезанный запрос -> исключение');
     
+    //TODO; It does not work
     $trunc = substr($resp->serialize(), 0, strlen($rw) - 2); // откусили байт rdata
     $t->throws(fn() => DnsMessage::deserialize($trunc), 'DnsMessage: обрезанный ответ -> исключение');
   }

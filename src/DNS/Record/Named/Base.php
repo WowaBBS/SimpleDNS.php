@@ -22,11 +22,11 @@ abstract class NamedRdata extends DnsRdata
     // MX, где exchange указывает на имя из QUESTION: CNAME-запись с указателем на смещение 12
     // буфер: [12 байт заголовка][question name "example.com"][...][CNAME rdata с указателем C00C]
     $msg = str_repeat("\0", 12)
-       . "\x07example\x03com\x00"   // имя в смещении 12
+       . "\x07example\x03com\x00" // имя в смещении 12
        . "\x07target"         // не важная часть
        . "\xC0\x0C"           // CNAME rdata: указатель на "example.com"
     ;
-    [$cname] = CnameRecord::deserialize($msg, 0 + strlen($msg) - 2, 2);
+    $cname = CnameRecord::deserialize($msg, 0 + strlen($msg) - 2, 2);
     $t->eq($cname->target, 'example.com', 'RdataName: указатель из RDATA в вопрос разрешается');
   }
 }

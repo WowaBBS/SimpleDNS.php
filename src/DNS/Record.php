@@ -16,7 +16,7 @@ final class DnsRecord
   /** Фабрика OPT-записи для EDNS0 */
   public static function opt(int $udpSize = 4096, bool $dnssec = false): self
   {
-    return new self('', 41, $udpSize, 0, new OptRecord(0, 0, $dnssec));
+    return new self('', 41, $udpSize, 0, new OptRecord($udpSize, 0, $dnssec));
   }
 
   public function serialize(): string
@@ -26,6 +26,7 @@ final class DnsRecord
     // у OPT класс-поле несёт UDP-размер, TTL - extRcode/version/DO
     $class = $this->class;
     $ttl   = $this->ttl;
+    
     if ($this->rdata instanceof OptRecord)
     {
       $class =  $this->rdata->udpSize;
@@ -33,7 +34,7 @@ final class DnsRecord
             | (($this->rdata->version & 0xFF) << 16)
             | ( $this->rdata->do ? 1 << 15 : 0);
     }
-
+    
     return NameCodec::encode($this->name)
       . pack('nnNn', $this->type, $class, $ttl, strlen($rdata))
       . $rdata;

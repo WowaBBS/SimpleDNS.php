@@ -3,11 +3,11 @@
 final class OptRecord extends DnsRdata
 {
   public function __construct(
-    public int  $udpSize = 4096,
-    public int  $extRcode = 0,
-    public int  $version = 0,
-    public bool   $do = false,    // флаг DNSSEC OK
-    public string $options = '',  // сырые EDNS-опции: OPTCODE(2) OPTLEN(2) DATA...
+    public int    $udpSize  = 4096,
+    public int    $extRcode = 0,
+    public int    $version  = 0,
+    public bool   $do      = false,    // флаг DNSSEC OK
+    public string $options  = '',  // сырые EDNS-опции: OPTCODE(2) OPTLEN(2) DATA...
   ) {}
 
   public function serialize(): string

@@ -23,9 +23,9 @@ final class CaaRecord extends DnsRdata
     
     $flags  = ord($msg[$off]);
     $tagLen = ord($msg[$off + 1]);
-    if ($tagLen + 2 > $rdLen) {
+    if ($tagLen + 2 > $rdLen)
       throw new RuntimeException('CAA tag выходит за границы RDATA');
-    }
+    
     $tag   = substr($msg, $off + 2, $tagLen);
     $value = substr($msg, $off + 2 + $tagLen);
     return new static($flags, $tag, $value);

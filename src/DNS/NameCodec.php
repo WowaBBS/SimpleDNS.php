@@ -89,8 +89,9 @@ final class NameCodec
     $t->throws(fn() => NameCodec::encode('a..b'), 'NameCodec: пустая метка -> исключение');
     
     // Декодирование compression pointer: имя в начале, указатель позже
+    //      4      +8=12      +4=16  +1=17   +8=25
     $buf = "\x03www\x07example\x03com\x00" . str_repeat("\0", 8) . "\xC0\x00\x00\x01\x00\x01";
-    $t->eq(NameCodec::decode($buf, 27)[0], 'www.example.com', 'NameCodec: указатель на начало буфера');
+    $t->eq(NameCodec::decode($buf, 25)[0], 'www.example.com', 'NameCodec: указатель на начало буфера');
     
     // Зацикленный указатель -> исключение (защита от бесконечного цикла)
     $t->throws(fn() => NameCodec::decode("\xC0\x00", 0), 'NameCodec: зацикленный указатель -> исключение');

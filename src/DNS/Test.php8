@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 include_once '../_Cli.php' ;
 include_once '_All.php';
-include_once 'Test.php';
+include_once '../Debug/Test.php';
 
 $t = new TestRunner();
 

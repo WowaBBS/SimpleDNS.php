@@ -1,4 +1,6 @@
 <?
+include 'Binary.php';
+
 final class TestRunner
 {
   public int $pass = 0;
@@ -41,9 +43,4 @@ final class TestRunner
     printf("\nИтог: %d пройдено, %d упало\n", $this->pass, $this->fail);
     exit($this->fail > 0 ? 1 : 0);
   }
-}
-
-function hexs(string $bin): string
-{
-  return strtoupper(implode(' ', str_split(bin2hex($bin), 2)));
 }

@@ -11,17 +11,17 @@ final class DnsHeader
   ];
 
   public function __construct(
-    public int  $id = 0,
-    public bool $qr = false,    // ответ (0 = запрос)
-    public int  $opcode = 0,
-    public bool $aa = false,
-    public bool $tc = false,
-    public bool $rd = false,
-    public bool $ra = false,
-    public bool $z = false,
-    public bool $ad = false,
-    public bool $cd = false,
-    public int  $rcode = 0,
+    public int  $id  =     0,
+    public bool $qr  = false, //Xxxx xxxx ответ (0 = запрос)
+    public int  $opcode  = 0, //xXXX Xxxx
+    public bool $aa  = false, //xxxx xXxx данное поле имеет смысл только в DNS-ответах от сервера и сообщает о том, является ли ответ авторитетным либо нет. 
+    public bool $tc  = false, //xxxx xxXx данный флаг устанавливается в пакете ответе в том случае если сервер не смог поместить всю необходимую информацию в пакет из-за существующих ограничений.
+    public bool $rd  = false, //xxxx xxxX этот однобитовый флаг устанавливается в запросе и копируется в ответ. Если он флаг устанавливается в запросе — это значит, что клиент просит сервер не сообщать ему промежуточных ответов, а вернуть только IP-адрес.
+    public bool $ra  = false, //Xxxx xxxx отправляется только в ответах, и сообщает о том, что сервер поддерживает рекурсию
+    public bool $z   = false, //xXxx xxxx являются зарезервированными и всегда равны нулю.
+    public bool $ad  = false, //xxXx xxxx ?
+    public bool $cd  = false, //xxxX xxxx ?
+    public int  $rcode   = 0, //xxxx XXXX это поле служит для уведомления клиентов о том, успешно ли выполнен запрос или с ошибкой.
     public int  $qdCount = 0,
     public int  $anCount = 0,
     public int  $nsCount = 0,
@@ -78,7 +78,7 @@ final class DnsHeader
   static function test(TestRunner $t)
   {
     $h = new DnsHeader(id: 0x1234, qr: true, rd: true, rcode: 3);
-    $t->eq(hexs($h->serialize()), '12 34 81 83 00 00 00 00 00 00 00 00', 'DnsHeader: точные байты (QR|RD, rcode=3)');
+    $t->eq(hexs($h->serialize()), '12 34 81 03 00 00 00 00 00 00 00 00', 'DnsHeader: точные байты (QR|RD, rcode=3)');
     
     $h2 = DnsHeader::deserialize($h->serialize());
     $t->eq($h2->id    , 0x1234 , 'DnsHeader: roundtrip id');
