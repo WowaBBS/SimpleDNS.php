@@ -1,8 +1,7 @@
 <?php
 declare(strict_types=1);
         
-Include_Once 'NameCodec.php'      ;
-Include_Once 'StrCodec.php'       ;
+Include_Once 'Codec/_All.php'     ;
 Include_Once 'Header.php'         ;
 Include_Once 'Question.php'       ;
 Include_Once 'Record/_All.php'    ;
