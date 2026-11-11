@@ -63,6 +63,28 @@ final class DnsRecord
     return [$record, $off + $rdLen];
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->name, $table, $buf);
+
+    // у OPT класс-поле несёт UDP-размер, TTL - extRcode/version/DO
+    if ($this->rdata instanceof OptRecord) {
+      $class = $this->rdata->udpSize;
+      $ttl   = ( $this->rdata->extRcode << 24)
+             | (($this->rdata->version & 0xFF) << 16)
+             | ( $this->rdata->do ? 1 << 15 : 0);
+    } else {
+      [$class, $ttl] = [$this->class, $this->ttl];
+    }
+
+    $lenPos = strlen($buf) + 8;         // где будет RDLENGTH
+    $buf .= pack('nnN', $this->type, $class, $ttl) . "\0\0";
+
+    $this->rdata?->serializeWith($table, $buf); // RDATA - сразу в общий буфер
+
+    $buf = substr_replace($buf, pack('n', strlen($buf) - $lenPos - 2), $lenPos, 2);
+  }
+  
   public function __toString(): string
   {
     return sprintf('%-6s %-32s TTL=%-6d %s',

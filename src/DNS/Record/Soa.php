@@ -28,6 +28,13 @@ final class SoaRecord extends DnsRdata
     return new static($mname, $rname, $n['serial'], $n['refresh'], $n['retry'], $n['expire'], $n['min']);
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->mname, $table, $buf);
+    NameCodec::encodeWith($this->rname, $table, $buf);
+    $buf .= pack('N5', $this->serial, $this->refresh, $this->retry, $this->expire, $this->minimum);
+  }
+  
   public function __toString(): string
   {
     return sprintf('%s %s serial=%u refresh=%u retry=%u expire=%u min=%u',

@@ -24,6 +24,12 @@ final class DnsQuestion
     return [new self($name, $type, $class), $off + 4];
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->name, $table, $buf);
+    $buf .= pack('nn', $this->type, $this->class);
+  }
+
 //****************************************************************
 // Json
 

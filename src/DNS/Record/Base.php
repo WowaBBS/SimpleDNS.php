@@ -14,6 +14,15 @@ abstract class DnsRdata
    */
   abstract public static function deserialize(string $msg, int $off, int $rdLen): static;
 
+  /**
+   * Дописывает RDATA в &$buf. Базовая реализация - без имён,
+   * просто переносит результат serialize().
+   */
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    $buf .= $this->serialize();
+  }
+
   abstract public function __toString(): string;
 
   static function test(TestRunner $t)

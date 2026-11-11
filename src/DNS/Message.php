@@ -49,6 +49,25 @@ final class DnsMessage
     return $out;
   }
 
+  public function serializeWith(NameTable $table): string
+  {
+    $this->header->qdCount = count($this->questions  );
+    $this->header->anCount = count($this->answers    );
+    $this->header->nsCount = count($this->authority  );
+    $this->header->arCount = count($this->additional );
+
+    $buf = $this->header->serialize();
+    foreach ($this->questions as $q) {
+      $q->serializeWith($table, $buf);
+    }
+    foreach ([$this->answers, $this->authority, $this->additional] as $section) {
+      foreach ($section as $record) {
+        $record->serializeWith($table, $buf);
+      }
+    }
+    return $buf;
+  }
+  
   public static function deserialize(string $buf): self
   {
     $header = DnsHeader::deserialize($buf);

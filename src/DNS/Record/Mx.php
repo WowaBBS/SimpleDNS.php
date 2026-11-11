@@ -22,6 +22,12 @@ final class MxRecord extends DnsRdata
     return new static($pref, $exchange);
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    $buf .= pack('n', $this->pref);
+    NameCodec::encodeWith($this->exchange, $table, $buf);
+  }
+  
   public function __toString(): string { return "{$this->pref} {$this->exchange}"; }
 
   static function test(TestRunner $t)

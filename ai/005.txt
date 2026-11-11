@@ -1,0 +1,385 @@
+Сейчас бинарная сериализация не поддерживает сжатия доменных имён, 
+но если в функцию сериализации передать специальный объект в который
+NameCodec будет сохранять смещения сохранённых имён, то она сможет
+ссылаться на них обеспечивая сжатие. Причём функцию serialize()
+без параметров стоит оставить для совместимости. Лучше для сериализации
+с параметром сохранённых имен вынести в отдельную функцию.
+
+
+Хорошая идея - так сжатие становится опциональным и управляемым. Реализую через <карту имён>: отдельный класс `NameTable` хранит смещения уже записанных имён, а `NameCodec::encodeWith` при записи сверяется с ним и ставит указатели. Всё по ссылке на общий буфер - тогда абсолютное смещение любого имени в любой момент равно `strlen($buf)`, и отдельный курсор не нужен.
+
+Сериализация без параметров (`serialize()`) остаётся без изменений - несжатый путь работает как раньше.
+
+## Добавления в `doh_client.php`
+
+```php
+/* ============================================================
+ * NameTable - карта имён для сжатия
+ * ============================================================ */
+
+/**
+ * Одноразовая карта для одного сообщения: хранит первое смещение
+ * каждого записанного имени. Указатели указывают только назад и
+ * только на смещения < 0x4000, поэтому смещения за этой границей
+ * не регистрируются вовсе.
+ */
+final class NameTable
+{
+  /** @var array<string,int> ключ - имя в нижнем регистре, значение - смещение первого вхождения */
+  private array $map = [];
+
+  public function lookup(string $name): ?int
+  {
+    return $this->map[strtolower($name)] ?? null;
+  }
+
+  public function register(string $name, int $offset): void
+  {
+    if ($name === '' || $offset >= 0x4000) {
+      return; // корень и смещения вне досягаемости указателей не сохраняем
+    }
+    $key = strtolower($name);   // сравнение имён регистронезависимо (RFC 4343)
+    $this->map[$key] ??= $offset;
+  }
+
+  /** Смещения локальны для одного сообщения - перед повторным использованием сбросить */
+  public function reset(): void
+  {
+    $this->map = [];
+  }
+}
+
+/* ============================================================
+ * NameCodec: добавляется encodeWith - запись с сжатием
+ * ============================================================ */
+
+final class NameCodec
+{
+  // encode() и decode() - без изменений...
+
+  /**
+   * Кодирование имени со сжатием: дописывает имя в &$buf, попутно
+   * регистрируя смещения самого имени и всех его суффиксов.
+   * Если имя или суффикс уже встречались - вместо литералов ставится
+   * указатель на первое вхождение (RFC 1035, 4.1.4).
+   */
+  public static function encodeWith(string $name, NameTable $table, string &$buf): void
+  {
+    $labels = $name === '' ? [] : explode('.', rtrim($name, '.'));
+    $count  = count($labels);
+
+    // самый длинный уже сохранённый суффикс (полное имя имеет приоритет)
+    $matchOff = null;
+    $matchIdx = $count;
+    for ($i = 0; $i < $count; $i++) {
+      $off = $table->lookup(implode('.', array_slice($labels, $i)));
+      if ($off !== null) {
+        $matchOff = $off;
+        $matchIdx = $i;
+        break;
+      }
+    }
+
+    // литеральные метки до точки совпадения
+    for ($i = 0; $i < $matchIdx; $i++) {
+      $table->register(implode('.', array_slice($labels, $i)), strlen($buf));
+      $label = $labels[$i];
+      $len = strlen($label);
+      if ($len === 0 || $len > 63) {
+        throw new InvalidArgumentException("Некорректная метка в имени: '$label'");
+      }
+      $buf .= chr($len) . $label;
+    }
+
+    if ($matchOff !== null) {
+      $buf .= pack('n', 0xC000 | $matchOff);
+    } else {
+      $buf .= "\0";
+    }
+  }
+}
+```
+
+Теперь методы `serializeWith` - отдельная ветка сериализации с параметром:
+
+```php
+/* ============================================================
+ * DnsRdata: сериализация со сжатием
+ * ============================================================ */
+
+abstract class DnsRdata
+{
+  // serialize(), deserialize(), toJson(), fromJson(), __toString() - без изменений...
+
+  /**
+   * Дописывает RDATA в &$buf. Базовая реализация - без имён,
+   * просто переносит результат serialize().
+   */
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    $buf .= $this->serialize();
+  }
+}
+
+/* RDATA из одного имени */
+abstract class NamedRdata extends DnsRdata
+{
+  // ...
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->target, $table, $buf);
+  }
+}
+
+final class MxRecord extends DnsRdata
+{
+  // ...
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    $buf .= pack('n', $this->pref);
+    NameCodec::encodeWith($this->exchange, $table, $buf);
+  }
+}
+
+final class SoaRecord extends DnsRdata
+{
+  // ...
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->mname, $table, $buf);
+    NameCodec::encodeWith($this->rname, $table, $buf);
+    $buf .= pack('N5', $this->serial, $this->refresh, $this->retry, $this->expire, $this->minimum);
+  }
+}
+
+final class SrvRecord extends DnsRdata
+{
+  // ...
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    $buf .= pack('nnn', $this->priority, $this->weight, $this->port);
+    NameCodec::encodeWith($this->target, $table, $buf);
+  }
+}
+
+/* A, AAAA, TXT, CAA, OPT, UnknownRdata - имён внутри нет,
+   унаследуют базовый serializeWith без переопределения */
+```
+
+Ключевой момент с длиной RDATA: при сжатии она заранее неизвестна, поэтому `DnsRecord::serializeWith` пишет фиксированную часть с заглушкой под RDLENGTH, дописывает RDATA прямо в буфер и потом латает два байта через `substr_replace`. Зато смещения имён внутри RDATA получаются сразу абсолютными - они регистрируются в таблицу корректно и на них потом могут ссылаться следующие записи.
+
+```php
+/* ============================================================
+ * DnsQuestion: сериализация со сжатием
+ * ============================================================ */
+
+final class DnsQuestion
+{
+  // ...
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->name, $table, $buf);
+    $buf .= pack('nn', $this->type, $this->class);
+  }
+}
+
+/* ============================================================
+ * DnsRecord: сериализация со сжатием (с патчем RDLENGTH)
+ * ============================================================ */
+
+final class DnsRecord
+{
+  // ...
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->name, $table, $buf);
+
+    // у OPT класс-поле несёт UDP-размер, TTL - extRcode/version/DO
+    if ($this->rdata instanceof OptRecord) {
+      $class = $this->rdata->udpSize;
+      $ttl   = ($this->rdata->extRcode << 24)
+           | (($this->rdata->version & 0xFF) << 16)
+           | ($this->rdata->do ? 1 << 15 : 0);
+    } else {
+      [$class, $ttl] = [$this->class, $this->ttl];
+    }
+
+    $lenPos = strlen($buf) + 8;         // где будет RDLENGTH
+    $buf .= pack('nnN', $this->type, $class, $ttl) . "\0\0";
+
+    $this->rdata?->serializeWith($table, $buf); // RDATA - сразу в общий буфер
+
+    $buf = substr_replace($buf, pack('n', strlen($buf) - $lenPos - 2), $lenPos, 2);
+  }
+}
+
+/* ============================================================
+ * DnsMessage: сериализация со сжатием
+ * ============================================================ */
+
+final class DnsMessage
+{
+  // ...
+  public function serializeWith(NameTable $table): string
+  {
+    $this->header->qdCount = count($this->questions);
+    $this->header->anCount = count($this->answers);
+    $this->header->nsCount = count($this->authority);
+    $this->header->arCount = count($this->additional);
+
+    $buf = $this->header->serialize();
+    foreach ($this->questions as $q) {
+      $q->serializeWith($table, $buf);
+    }
+    foreach ([$this->answers, $this->authority, $this->additional] as $section) {
+      foreach ($section as $record) {
+        $record->serializeWith($table, $buf);
+      }
+    }
+    return $buf;
+  }
+}
+```
+
+В транспорт добавляю переключатель - по умолчанию по-прежнему несжатая сериализация:
+
+```php
+final class DohTransport
+{
+  // ...
+  public static function exchange(DnsMessage $request, int $timeout = 5, bool $compress = false): DnsMessage
+  {
+    // ...
+    'content' => $compress ? $request->serializeWith(new NameTable()) : $request->serialize(),
+    // ...
+  }
+}
+```
+
+## Новые тесты
+
+```php
+/* ---------- Сжатие имён: золотой вектор ---------- */
+
+$resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true));
+$resp->questions[] = new DnsQuestion('www.example.com', 1);
+$resp->answers[] = new DnsRecord('www.example.com', 1, 1, 10, new ARecord('192.168.1.1'));
+
+$compressed = $resp->serializeWith(new NameTable());
+$t->eq(hexs($compressed),
+  '12 34 81 80 00 01 00 01 00 00 00 00'
+  . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+  . ' C0 0C 00 01 00 01 00 00 00 0A 00 04 C0 A8 01 01',
+  'Сжатие: золотой вектор, имя ответа -> указатель C0 0C');
+
+// roundtrip: deserialize -> serializeWith воспроизводит те же байты
+$parsed = DnsMessage::deserialize($compressed);
+$t->eq($parsed->serializeWith(new NameTable()), $compressed, 'Сжатие: roundtrip байт в байт');
+$t->eq($parsed->answers[0]->name, 'www.example.com', 'Сжатие: имя после roundtrip');
+$t->eq($parsed->answers[0]->rdata->ip, '192.168.1.1', 'Сжатие: rdata после roundtrip');
+
+// serialize() без параметров не сжат и не изменился
+$plain = $resp->serialize();
+$t->eq(strlen($plain) > strlen($compressed), true, 'Сжатие: serialize() длиннее serializeWith()');
+$t->eq($plain, $parsed->serialize(), 'Сжатие: serialize() обратно собрал прежние несжатые байты');
+
+// одиночный запрос без повторов имён: serializeWith == serialize
+$q = DnsMessage::query('www.example.com', 1);
+$t->eq($q->serializeWith(new NameTable()), $q->serialize(),
+  'Сжатие: запросу сжимать нечего - байты совпадают');
+
+/* ---------- Сжатие суффиксов ---------- */
+
+// "example.com" после "www.example.com" -> указатель на смещение 16 (C0 10)
+$msg2 = new DnsMessage(new DnsHeader(id: 2, qr: true));
+$msg2->questions[] = new DnsQuestion('www.example.com', 1);
+$msg2->answers[] = new DnsRecord('example.com', 1, 1, 10, new ARecord('1.2.3.4'));
+$c2 = $msg2->serializeWith(new NameTable());
+$t->eq(substr_count($c2, "\xC0\x10"), 1, 'Сжатие: суффикс имени -> указатель C0 10');
+$t->eq(DnsMessage::deserialize($c2)->answers[0]->name, 'example.com', 'Сжатие: суффикс roundtrip');
+
+/* ---------- Сжатие внутри RDATA ---------- */
+
+// CNAME на имя из вопроса
+$msg3 = new DnsMessage(new DnsHeader(id: 3, qr: true));
+$msg3->questions[] = new DnsQuestion('example.com', 5);
+$msg3->answers[] = new DnsRecord('www.example.com', 5, 1, 60, new CnameRecord('example.com'));
+$c3 = $msg3->serializeWith(new NameTable());
+$t->eq(substr_count($c3, "\xC0\x0C"), 1, 'Сжатие: указатель внутри RDATA (CNAME)');
+$p3 = DnsMessage::deserialize($c3);
+$t->eq($p3->answers[0]->rdata->target, 'example.com', 'Сжатие: CNAME target roundtrip');
+
+// SOA: mname и rname сжимаются на общий суффикс
+$soaMsg = new DnsMessage(new DnsHeader(id: 6, qr: true));
+$soaMsg->questions[] = new DnsQuestion('example.com', 6);
+$soaMsg->answers[] = new DnsRecord('example.com', 6, 1, 3600,
+  new SoaRecord('ns1.example.com', 'admin.example.com', 1, 2, 3, 4, 5));
+$cs = $soaMsg->serializeWith(new NameTable());
+// имя записи, mname и rname - три указателя на example.com
+$t->eq(substr_count($cs, "\xC0\x0C"), 3, 'Сжатие: SOA - три указателя на общий суффикс');
+$ps = DnsMessage::deserialize($cs);
+$t->eq([$ps->answers[0]->rdata->mname, $ps->answers[0]->rdata->rname],
+  ['ns1.example.com', 'admin.example.com'], 'Сжатие: SOA roundtrip');
+
+// несжимаемый RDATA (TXT) не ломается рядом со сжатым
+$txtMsg = new DnsMessage(new DnsHeader(id: 4, qr: true));
+$txtMsg->questions[] = new DnsQuestion('example.com', 16);
+$txtMsg->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord(['hello world']));
+$txtMsg->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord([str_repeat('z', 300)]));
+$ct = $txtMsg->serializeWith(new NameTable());
+$pt = DnsMessage::deserialize($ct);
+$t->eq($pt->answers[1]->rdata->texts, [str_repeat('z', 300)], 'Сжатие: длинный TXT рядом с указателями roundtrip');
+
+/* ---------- Регистронезависимость ---------- */
+
+$msg4 = new DnsMessage(new DnsHeader(id: 5, qr: true));
+$msg4->questions[] = new DnsQuestion('www.example.com', 1);
+$msg4->answers[] = new DnsRecord('WWW.Example.COM', 1, 1, 10, new ARecord('9.9.9.9'));
+$c4 = $msg4->serializeWith(new NameTable());
+$t->eq(substr_count($c4, "\xC0\x0C"), 1, 'Сжатие: регистр не мешает сжатию (RFC 4343)');
+$t->eq(DnsMessage::deserialize($c4)->answers[0]->name, 'WWW.Example.COM',
+  'Сжатие: регистр имени сохраняется при сжатии');
+
+/* ---------- Смещения за границей 0x4000 ---------- */
+
+// Имена на смещении >= 0x4000 нельзя адресовать указателем - они пишутся литералом
+$big = new DnsMessage(new DnsHeader(id: 7, qr: true));
+$big->questions[] = new DnsQuestion('example.com', 16);
+$big->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord([str_repeat('x', 16300)]));
+$big->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord([str_repeat('y', 16300)]));
+$big->answers[] = new DnsRecord('deep.unique.example.org', 16, 1, 60, new TxtRecord(['t1']));
+$big->answers[] = new DnsRecord('deep.unique.example.org', 16, 1, 60, new TxtRecord(['t2']));
+$cb = $big->serializeWith(new NameTable());
+$t->eq(substr_count($cb, "\xC0\x0C"), 2, 'Граница 0x4000: первые два имени сжаты');
+$t->eq(substr_count($cb, 'deep.unique.example.org'), 2,
+  'Граница 0x4000: имя за пределами досягаемости указателя пишется литералом дважды');
+$pb = DnsMessage::deserialize($cb);
+$t->eq(count($pb->answers), 4, 'Граница 0x4000: все четыре записи разобрались');
+
+/* ---------- OPT через сжатый путь ---------- */
+
+$qc = DnsMessage::query('a.example.com', 1, dnssec: true);
+$wireQ = $qc->serializeWith(new NameTable());
+$pq = DnsMessage::deserialize($wireQ);
+$t->eq(count($pq->additional), 1, 'Сжатие: EDNS OPT присутствует');
+$t->eq($pq->additional[0]->rdata->do, true, 'Сжатие: флаг DO сохранён');
+$t->eq($pq->additional[0]->name, '', 'Сжатие: имя OPT - корень');
+
+/* ---------- Ошибки через сжатый путь ---------- */
+
+$badName = new DnsMessage(new DnsHeader(id: 8));
+$badName->questions[] = new DnsQuestion(str_repeat('x', 64), 1);
+$t->throws(fn() => $badName->serializeWith(new NameTable()),
+  'Сжатие: метка 64 байта через serializeWith -> исключение');
+```
+
+## Что важно знать
+
+- **Указатель всегда смотрит назад.** Таблица заполняется по ходу записи, и `lookup` находит только ранее записанные имена - выход вперёд невозможен архитектурно.
+- **Сжимаются и суффиксы.** При записи `www.example.com` в таблицу попадают и `www.example.com`, и `example.com`, и `com` - следующая запись с именем `example.com` получит указатель, а не литерал. Именно это показывает тест `C0 10`.
+- **Регистронезависимое сравнение.** Ключи в таблице - в нижнем регистре, но в буфер пишутся исходные байты, так что регистр имён сохраняется, как и требует RFC 4343.
+- **Граница 0x4000.** Указатель умещает 14 бит смещения, поэтому имена, записанные дальше 16383-го байта, в таблицу не попадают и повторяются литералом - тест с двумя большими TXT это проверяет.
+- **`serialize()` не тронут.** Все прежние тесты, включая золотые векторы несжатого запроса, проходят без изменений.
+- **Таблица одноразовая.** Смещения локальны для конкретного сообщения; для каждого `serializeWith` нужен свежий `NameTable` (или `reset()`), иначе указатели из второй ссылки укажут в чужой буфер.
+
+Из RFC 1035 есть ещё один режим - сжатие записываемого имени на *само себя* (при DNSSEC-подписи для RRSIG/NSEC), но это уже экзотика за пределами нашего набора типов. Если нужны signed-записи - скажите, добавлю.

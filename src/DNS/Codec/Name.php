@@ -100,6 +100,49 @@ final class NameCodec
     $t->throws(fn() => NameCodec::decode("\xC0", 0), 'NameCodec: обрезанный указатель -> исключение');
   }
 
+  /**
+   * Кодирование имени со сжатием: дописывает имя в &$buf, попутно
+   * регистрируя смещения самого имени и всех его суффиксов.
+   * Если имя или суффикс уже встречались - вместо литералов ставится
+   * указатель на первое вхождение (RFC 1035, 4.1.4).
+   */
+  public static function encodeWith(string $name, NameTable $table, string &$buf): void
+  {
+    $labels = $name === '' ? [] : explode('.', rtrim($name, '.'));
+    $count  = count($labels);
+
+    // самый длинный уже сохранённый суффикс (полное имя имеет приоритет)
+    $matchOff = null;
+    $matchIdx = $count;
+    for ($i = 0; $i < $count; $i++)
+    {
+      $off = $table->lookup(implode('.', array_slice($labels, $i)));
+      if ($off !== null) //TODO: Inline
+      {
+        $matchOff = $off;
+        $matchIdx = $i;
+        break;
+      }
+    }
+
+    // литеральные метки до точки совпадения
+    for ($i = 0; $i < $matchIdx; $i++)
+    {
+      $table->register(implode('.', array_slice($labels, $i)), strlen($buf));
+      $label = $labels[$i];
+      $len = strlen($label);
+      if ($len === 0 || $len > 63)
+        throw new InvalidArgumentException("Некорректная метка в имени: '$label'");
+      
+      $buf .= chr($len) . $label;
+    }
+
+    if ($matchOff !== null)
+      $buf .= pack('n', 0xC000 | $matchOff);
+    else
+      $buf .= "\0";
+  }
+
 //****************************************************************
 // Json
 

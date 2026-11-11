@@ -25,6 +25,12 @@ final class SrvRecord extends DnsRdata
     return new static($p, $w, $pt, $target);
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    $buf .= pack('nnn', $this->priority, $this->weight, $this->port);
+    NameCodec::encodeWith($this->target, $table, $buf);
+  }
+  
   public function __toString(): string
   {
     return "{$this->priority} {$this->weight} {$this->port} {$this->target}";

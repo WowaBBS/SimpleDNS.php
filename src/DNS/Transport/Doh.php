@@ -7,13 +7,13 @@ final class DohTransport
 {
   public const ENDPOINT = 'https://dns.google/dns-query'; // или https://cloudflare-dns.com/dns-query
 
-  public static function exchange(DnsMessage $request, int $timeout = 5): DnsMessage
+  public static function exchange(DnsMessage $request, int $timeout = 5, bool $compress = false): DnsMessage
   {
     $context = stream_context_create([
       'http' => [
         'method'  => 'POST',
         'header'  => "Content-Type: application/dns-message\r\nAccept: application/dns-message\r\n",
-        'content' => $request->serialize(),
+        'content' => $compress ? $request->serializeWith(new NameTable()) : $request->serialize(),
         'timeout' => $timeout,
         'ignore_errors' => true,
       ],
