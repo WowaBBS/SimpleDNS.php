@@ -1,5 +1,5 @@
 <?
-/* --- OPT (EDNS0) --- */
+/* OPT и неизвестные типы: механизм \# по RFC 3597 */
 final class OptRecord extends DnsRdata
 {
   public function __construct(
@@ -41,4 +41,19 @@ final class OptRecord extends DnsRdata
     $m->additional[] = new DnsRecord('', 41, 4096, 0, new OptRecord(4096, 1, 0, false));
     $t->eq($m->rcode(), 16, 'DnsMessage::rcode(): расширение через EDNS');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string
+  {
+    return $this->options === '' ? "\# 0" : "\# " . strlen($this->options) . ' ' . strtoupper(bin2hex($this->options));
+  }
+
+  public static function fromJson(string $data): static
+  {
+    return new static(options: UnknownRdata::decodeHash($data));
+  }
+
+//****************************************************************
 }

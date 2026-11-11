@@ -92,4 +92,35 @@ final class DnsHeader
     
     $t->throws(fn() => DnsHeader::deserialize('1234'), 'DnsHeader: буфер < 12 байт -> исключение');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): array
+  {
+    return [
+      'ID'   => $this->id,
+      'Status' => $this->rcode,
+      'TC'   => $this->tc,
+      'RD'   => $this->rd,
+      'RA'   => $this->ra,
+      'AD'   => $this->ad,
+      'CD'   => $this->cd,
+    ];
+  }
+
+  public static function fromJson(array $j): self
+  {
+    return new self(
+      id:  (int)($j['ID'] ?? 0),
+      rcode: (int)($j['Status'] ?? throw new RuntimeException('В JSON нет поля Status')),
+      tc:  (bool)($j['TC'] ?? false),
+      rd:  (bool)($j['RD'] ?? false),
+      ra:  (bool)($j['RA'] ?? false),
+      ad:  (bool)($j['AD'] ?? false),
+      cd:  (bool)($j['CD'] ?? false),
+    );
+  }
+
+//****************************************************************
 }

@@ -29,4 +29,19 @@ abstract class NamedRdata extends DnsRdata
     $cname = CnameRecord::deserialize($msg, 0 + strlen($msg) - 2, 2);
     $t->eq($cname->target, 'example.com', 'RdataName: указатель из RDATA в вопрос разрешается');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string
+  {
+    return NameCodec::toPresentation($this->target);
+  }
+
+  public static function fromJson(string $data): static
+  {
+    return new static(NameCodec::fromPresentation(trim($data)));
+  }
+
+//****************************************************************
 }

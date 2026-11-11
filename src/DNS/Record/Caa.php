@@ -44,4 +44,21 @@ final class CaaRecord extends DnsRdata
     $t->eq($caa2->tag, 'issue', 'CaaRecord: roundtrip tag');
     $t->eq($caa2->value, 'letsencrypt.org', 'CaaRecord: roundtrip value');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string
+  {
+    return sprintf('%d %s "%s"', $this->flags, $this->tag, StrCodec::escape($this->value));
+  }
+
+  public static function fromJson(string $data): static
+  {
+    if (!preg_match('/^(\d+)\s+(\S+)\s+"((?:[^"\\\\]|\\\\.)*)"$/', trim($data), $m))
+      throw new RuntimeException("Некорректный CAA: $data");
+    
+    return new static((int)$m[1], $m[2], StrCodec::unescape($m[3]));
+  }
+//****************************************************************
 }

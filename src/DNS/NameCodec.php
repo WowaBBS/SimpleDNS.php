@@ -99,4 +99,36 @@ final class NameCodec
     // ќбрезанный указатель -> исключение
     $t->throws(fn() => NameCodec::decode("\xC0", 0), 'NameCodec: обрезанный указатель -> исключение');
   }
+
+//****************************************************************
+// Json
+
+  // ¬ JSON имена пишутс€ с точкой на конце (FQDN), у нас внутри - без неЄ.
+  
+  public static function toPresentation(string $name): string
+  {
+    return $name === '' ? '.' : rtrim($name, '.') . '.';
+  }
+
+  public static function fromPresentation(string $name): string
+  {
+    //TODO: Check required point at the end?
+    if ($name === '.' || $name === '') return '';
+    
+    return rtrim($name, '.');
+  }
+
+//****************************************************************
+// TestJson
+
+  static function testJson(TestRunner $t)
+  {
+    /* ---------- JSON: имена в презентационном формате ---------- */
+  
+    $t->eq(NameCodec::toPresentation('example.com'), 'example.com.', 'NameCodec: toPresentation добавл€ет точку');
+    $t->eq(NameCodec::toPresentation(''), '.', 'NameCodec: toPresentation корн€');
+    $t->eq(NameCodec::fromPresentation('example.com.'), 'example.com', 'NameCodec: fromPresentation убирает точку');
+    $t->eq(NameCodec::fromPresentation('.'), '', 'NameCodec: fromPresentation корн€');
+  }
+//****************************************************************
 }

@@ -41,4 +41,31 @@ final class SoaRecord extends DnsRdata
     $t->eq($soa2->serial, 2024010101, 'SoaRecord: roundtrip serial');
     $t->eq($soa2->minimum, 3600, 'SoaRecord: roundtrip minimum');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string
+  {
+    return implode(' ', [
+      NameCodec::toPresentation($this->mname),
+      NameCodec::toPresentation($this->rname),
+      $this->serial, $this->refresh, $this->retry, $this->expire, $this->minimum,
+    ]);
+  }
+
+  public static function fromJson(string $data): static
+  {
+    $p = preg_split('/\s+/', trim($data));
+    if (count($p) !== 7) {
+      throw new RuntimeException("Некорректный SOA: $data");
+    }
+    return new static(
+      NameCodec::fromPresentation($p[0]),
+      NameCodec::fromPresentation($p[1]),
+      (int)$p[2], (int)$p[3], (int)$p[4], (int)$p[5], (int)$p[6],
+    );
+  }
+
+//****************************************************************
 }

@@ -36,4 +36,25 @@ final class SrvRecord extends DnsRdata
     $srv2 = SrvRecord::deserialize($srv->serialize(), 0, strlen($srv->serialize()));
     $t->eq([$srv2->priority, $srv2->weight, $srv2->port, $srv2->target], [1, 5, 5061, 'sip.example.com'], 'SrvRecord: roundtrip');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string
+  {
+    return sprintf('%d %d %d %s',
+      $this->priority, $this->weight, $this->port,
+      NameCodec::toPresentation($this->target));
+  }
+
+  public static function fromJson(string $data): static
+  {
+    $p = preg_split('/\s+/', trim($data));
+    if (count($p) !== 4)
+      throw new RuntimeException("Некорректный SRV: $data");
+    
+    return new static((int)$p[0], (int)$p[1], (int)$p[2], NameCodec::fromPresentation($p[3]));
+  }
+
+//****************************************************************
 }

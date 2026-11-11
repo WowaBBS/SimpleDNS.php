@@ -1,0 +1,595 @@
+Добавь сериализацию и десериализацию в json для поддержки application/dns+json
+
+Да - по RFC 8427 (`application/dns+json`). Там всё хранится в <презентационном> виде: имена с точкой на конце, типы буквенными мнемониками (`"MX"`), а RDATA - текстом в том виде, в каком его печатает `dig`. Для неизвестных RDATA есть механизм `\# <длина> <hex>`. Ниже - дополнения к `doh_client.php`, плюс новые тесты.
+
+Важное отличие от wire-формата: JSON не содержит счётчиков секций и не умеет сжатие имён - обратный roundtrip в байты будет без указателей, зато содержимое записей сохраняется полностью.
+
+## Дополнения к коду
+
+Добавьте в `doh_client.php`:
+
+```php
+/* ---------- NameCodec: презентационный формат имён ---------- */
+/* В JSON имена пишутся с точкой на конце (FQDN), у нас внутри - без неё. */
+
+final class NameCodec
+{
+  // ... существующие encode() и decode() без изменений ...
+
+  public static function toPresentation(string $name): string
+  {
+    return $name === '' ? '.' : rtrim($name, '.') . '.';
+  }
+
+  public static function fromPresentation(string $name): string
+  {
+    if ($name === '.' || $name === '') {
+      return '';
+    }
+    return rtrim($name, '.');
+  }
+}
+
+/* ---------- DnsRdata: контракт JSON ---------- */
+
+abstract class DnsRdata
+{
+  // ... serialize(), deserialize(), __toString() без изменений ...
+
+  /** RDATA в презентационном формате (RFC 8427, поле Data) */
+  abstract public function toJson(): string;
+
+  /** Сборка RDATA из презентационного формата */
+  abstract public static function fromJson(string $data): static;
+}
+
+/* ---------- Экранирование строк (TXT, CAA) ---------- */
+
+final class StrCodec
+{
+  public static function escape(string $s): string
+  {
+    return addcslashes($s, "\0..\37\"\\");
+  }
+
+  public static function unescape(string $s): string
+  {
+    return stripcslashes($s);
+  }
+}
+
+/* ---------- Конкретные типы: JSON-методы ---------- */
+
+/* A и AAAA */
+final class ARecord extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string { return $this->ip; }
+
+  public static function fromJson(string $data): static
+  {
+    $bin = inet_pton(trim($data)) ?: throw new RuntimeException("Некорректный IPv4: $data");
+    return new static(inet_ntop($bin));
+  }
+}
+
+final class AaaaRecord extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string { return $this->ip; }
+
+  public static function fromJson(string $data): static
+  {
+    $bin = inet_pton(trim($data)) ?: throw new RuntimeException("Некорректный IPv6: $data");
+    return new static(inet_ntop($bin));
+  }
+}
+
+/* NS / CNAME / PTR - RDATA это одно имя, логика общая */
+abstract class NamedRdata extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string
+  {
+    return NameCodec::toPresentation($this->target);
+  }
+
+  public static function fromJson(string $data): static
+  {
+    return new static(NameCodec::fromPresentation(trim($data)));
+  }
+}
+
+final class MxRecord extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string
+  {
+    return $this->pref . ' ' . NameCodec::toPresentation($this->exchange);
+  }
+
+  public static function fromJson(string $data): static
+  {
+    if (!preg_match('/^(\d+)\s+(\S+)$/', trim($data), $m)) {
+      throw new RuntimeException("Некорректный MX: $data");
+    }
+    return new static((int)$m[1], NameCodec::fromPresentation($m[2]));
+  }
+}
+
+final class TxtRecord extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string
+  {
+    $parts = [];
+    foreach ($this->texts as $t) {
+      $parts[] = '"' . StrCodec::escape($t) . '"';
+    }
+    return implode(' ', $parts);
+  }
+
+  public static function fromJson(string $data): static
+  {
+    if (!preg_match_all('/"((?:[^"\\\\]|\\\\.)*)"/', $data, $m)) {
+      throw new RuntimeException("Некорректный TXT: $data");
+    }
+    return new static(array_map(StrCodec::unescape(...), $m[1]));
+  }
+}
+
+final class SoaRecord extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string
+  {
+    return implode(' ', [
+      NameCodec::toPresentation($this->mname),
+      NameCodec::toPresentation($this->rname),
+      $this->serial, $this->refresh, $this->retry, $this->expire, $this->minimum,
+    ]);
+  }
+
+  public static function fromJson(string $data): static
+  {
+    $p = preg_split('/\s+/', trim($data));
+    if (count($p) !== 7) {
+      throw new RuntimeException("Некорректный SOA: $data");
+    }
+    return new static(
+      NameCodec::fromPresentation($p[0]),
+      NameCodec::fromPresentation($p[1]),
+      (int)$p[2], (int)$p[3], (int)$p[4], (int)$p[5], (int)$p[6],
+    );
+  }
+}
+
+final class SrvRecord extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string
+  {
+    return sprintf('%d %d %d %s',
+      $this->priority, $this->weight, $this->port,
+      NameCodec::toPresentation($this->target));
+  }
+
+  public static function fromJson(string $data): static
+  {
+    $p = preg_split('/\s+/', trim($data));
+    if (count($p) !== 4) {
+      throw new RuntimeException("Некорректный SRV: $data");
+    }
+    return new static((int)$p[0], (int)$p[1], (int)$p[2], NameCodec::fromPresentation($p[3]));
+  }
+}
+
+final class CaaRecord extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string
+  {
+    return sprintf('%d %s "%s"', $this->flags, $this->tag, StrCodec::escape($this->value));
+  }
+
+  public static function fromJson(string $data): static
+  {
+    if (!preg_match('/^(\d+)\s+(\S+)\s+"((?:[^"\\\\]|\\\\.)*)"$/', trim($data), $m)) {
+      throw new RuntimeException("Некорректный CAA: $data");
+    }
+    return new static((int)$m[1], $m[2], StrCodec::unescape($m[3]));
+  }
+}
+
+/* OPT и неизвестные типы: механизм \# по RFC 3597 */
+final class OptRecord extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string
+  {
+    return $this->options === '' ? "\# 0" : "\# " . strlen($this->options) . ' ' . strtoupper(bin2hex($this->options));
+  }
+
+  public static function fromJson(string $data): static
+  {
+    return new static(options: UnknownRdata::decodeHash($data));
+  }
+}
+
+final class UnknownRdata extends DnsRdata
+{
+  // ... без изменений ...
+  public function toJson(): string
+  {
+    return $this->raw === '' ? "\# 0" : "\# " . strlen($this->raw) . ' ' . strtoupper(bin2hex($this->raw));
+  }
+
+  public static function fromJson(string $data): static
+  {
+    return new static(self::decodeHash($data));
+  }
+
+  /** Разбор "\# <длина> <hex>" (RFC 3597) */
+  public static function decodeHash(string $data): string
+  {
+    if (!preg_match('/^\\\\#\s+(\d+)\s*([0-9A-Fa-f]*)$/', trim($data), $m)) {
+      throw new RuntimeException("Некорректное \\#-представление: $data");
+    }
+    $hex = $m[2];
+    if ((int)$m[1] !== (int)(strlen($hex) / 2)) {
+      throw new RuntimeException("Длина не совпадает с hex: $data");
+    }
+    return hex2bin($hex);
+  }
+}
+
+/* ---------- Типы-мнемоники туда и обратно ---------- */
+
+final class DnsMessage
+{
+  // ... существующие методы без изменений ...
+
+  public static function typeFromName(string $name): int
+  {
+    $name = trim($name);
+    if (ctype_digit($name)) {
+      return (int)$name;
+    }
+    $flip = array_flip(self::TYPE_NAMES);
+    if (isset($flip[$name])) {
+      return $flip[$name];
+    }
+    if (preg_match('/^TYPE(\d+)$/i', $name, $m)) {
+      return (int)$m[1];
+    }
+    throw new RuntimeException("Неизвестный тип: $name");
+  }
+}
+```
+
+Теперь уровни записи, вопроса, заголовка и сообщения:
+
+```php
+/* ---------- DnsRecord: JSON ---------- */
+
+final class DnsRecord
+{
+  // ... без изменений ...
+  public function toJson(): array
+  {
+    $out = [
+      'Name' => NameCodec::toPresentation($this->name),
+      'Type' => DnsMessage::typeName($this->type),
+      'TTL'  => $this->ttl,
+      'Data' => $this->rdata->toJson(),
+    ];
+    if ($this->rdata instanceof OptRecord) {
+      // EDNS: свои поля (RFC 8427, 2.4.2)
+      $out['UDPSize'] = $this->rdata->udpSize;
+      $out['ExtRcode'] = $this->rdata->extRcode;
+      $out['Version'] = $this->rdata->version;
+      $out['DO'] = $this->rdata->do;
+    }
+    return $out;
+  }
+
+  public static function fromJson(array $j): self
+  {
+    foreach (['Name', 'Type', 'Data'] as $k) {
+      if (!array_key_exists($k, $j)) {
+        throw new RuntimeException("В записи нет поля $k");
+      }
+    }
+    $type = DnsMessage::typeFromName($j['Type']);
+    $cls  = RdataRegistry::classFor($type);
+    $rdata = $cls::fromJson($j['Data']);
+
+    if ($type === 41 && $rdata instanceof OptRecord) {
+      $rdata->udpSize  = (int)($j['UDPSize'] ?? 4096);
+      $rdata->extRcode = (int)($j['ExtRcode'] ?? 0);
+      $rdata->version  = (int)($j['Version'] ?? 0);
+      $rdata->do     = (bool)($j['DO'] ?? false);
+    }
+
+    return new self(
+      NameCodec::fromPresentation($j['Name']),
+      $type,
+      (int)($j['Class'] ?? 1),
+      (int)($j['TTL'] ?? 0),
+      $rdata,
+    );
+  }
+}
+
+/* ---------- DnsQuestion: JSON ---------- */
+
+final class DnsQuestion
+{
+  // ... без изменений ...
+  public function toJson(): array
+  {
+    return [
+      'Name' => NameCodec::toPresentation($this->name),
+      'Type' => DnsMessage::typeName($this->type),
+    ];
+  }
+
+  public static function fromJson(array $j): self
+  {
+    if (!isset($j['Name'], $j['Type'])) {
+      throw new RuntimeException('В вопросе нет полей Name/Type');
+    }
+    return new self(NameCodec::fromPresentation($j['Name']), DnsMessage::typeFromName($j['Type']));
+  }
+}
+
+/* ---------- DnsHeader: JSON ---------- */
+
+final class DnsHeader
+{
+  // ... без изменений ...
+  public function toJson(): array
+  {
+    return [
+      'ID'   => $this->id,
+      'Status' => $this->rcode,
+      'TC'   => $this->tc,
+      'RD'   => $this->rd,
+      'RA'   => $this->ra,
+      'AD'   => $this->ad,
+      'CD'   => $this->cd,
+    ];
+  }
+
+  public static function fromJson(array $j): self
+  {
+    return new self(
+      id:  (int)($j['ID'] ?? 0),
+      rcode: (int)($j['Status'] ?? throw new RuntimeException('В JSON нет поля Status')),
+      tc:  (bool)($j['TC'] ?? false),
+      rd:  (bool)($j['RD'] ?? false),
+      ra:  (bool)($j['RA'] ?? false),
+      ad:  (bool)($j['AD'] ?? false),
+      cd:  (bool)($j['CD'] ?? false),
+    );
+  }
+}
+
+/* ---------- DnsMessage: JSON ---------- */
+
+final class DnsMessage
+{
+  // ... без изменений ...
+  public function toJson(): array
+  {
+    $out = $this->header->toJson();
+    foreach (['Question' => $this->questions, 'Answer' => $this->answers,
+          'Authority' => $this->authority, 'Additional' => $this->additional] as $key => $section) {
+      if ($section !== []) {
+        $out[$key] = array_map(fn($x) => $x->toJson(), $section);
+      }
+    }
+    return $out;
+  }
+
+  public static function fromJson(string $json): self
+  {
+    $j = json_decode($json, true);
+    if (!is_array($j)) {
+      throw new RuntimeException('Не удалось разобрать JSON: ' . json_last_error_msg());
+    }
+
+    $m = new self(DnsHeader::fromJson($j));
+
+    foreach ([
+      'Question'   => &$m->questions,
+      'Answer'   => &$m->answers,
+      'Authority'  => &$m->authority,
+      'Additional' => &$m->additional,
+    ] as $key => &$section) {
+      foreach ($j[$key] ?? [] as $item) {
+        $section[] = is_array($item)
+          ? ($key === 'Question' ? DnsQuestion::fromJson($item) : DnsRecord::fromJson($item))
+          : throw new RuntimeException("Некорректный элемент в $key");
+      }
+    }
+    unset($section);
+
+    return $m;
+  }
+}
+```
+
+И транспорт - JSON-режим. Здесь есть практическая деталь: у Google JSON-эндпоинт (`/resolve`) принимает GET-параметры `name`/`type`, а обычные DoH-серверы в JSON-режиме ждут тот же GET с `?dns=<base64url>` и заголовком `Accept: application/dns+json`:
+
+```php
+final class DohTransport
+{
+  // ... exchange() без изменений ...
+
+  public static function exchangeJson(DnsMessage $request, int $timeout = 5): DnsMessage
+  {
+    $path = parse_url(self::ENDPOINT, PHP_URL_PATH) ?: '';
+    if (str_ends_with($path, '/resolve')) {
+      // JSON-API Google: параметры name и type
+      $q = $request->questions[0] ?? throw new RuntimeException('Нет вопросов в запросе');
+      $url = self::ENDPOINT . '?' . http_build_query([
+        'name' => $q->name, 'type' => DnsMessage::typeName($q->type),
+      ]);
+    } else {
+      // RFC 8484 GET: wire-запрос в base64url
+      $dns = rtrim(strtr(base64_encode($request->serialize()), '+/', '-_'), '=');
+      $url = self::ENDPOINT . '?dns=' . $dns;
+    }
+
+    $context = stream_context_create([
+      'http' => [
+        'method'  => 'GET',
+        'header'  => "Accept: application/dns+json\r\n",
+        'timeout' => $timeout,
+        'ignore_errors' => true,
+      ],
+      'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
+    ]);
+
+    $response = @file_get_contents($url, false, $context);
+    if ($response === false) {
+      throw new RuntimeException('Не удалось соединиться с DoH-сервером: '
+        . (error_get_last()['message'] ?? '?'));
+    }
+    if (!preg_match('/^HTTP\/\S+\s+2\d\d/', $http_response_header[0] ?? '')) {
+      throw new RuntimeException('DoH-сервер вернул ошибку: ' . ($http_response_header[0] ?? 'нет заголовков'));
+    }
+
+    $reply = DnsMessage::fromJson($response);
+
+    if ($reply->header->tc) {
+      throw new RuntimeException('Ответ усечён (TC=1)');
+    }
+
+    return $reply;
+  }
+}
+```
+
+## Новые тесты
+
+Добавьте в `doh_tests.php` перед `$t->summary();`:
+
+```php
+/* ---------- JSON: имена в презентационном формате ---------- */
+
+$t->eq(NameCodec::toPresentation('example.com'), 'example.com.', 'NameCodec: toPresentation добавляет точку');
+$t->eq(NameCodec::toPresentation(''), '.', 'NameCodec: toPresentation корня');
+$t->eq(NameCodec::fromPresentation('example.com.'), 'example.com', 'NameCodec: fromPresentation убирает точку');
+$t->eq(NameCodec::fromPresentation('.'), '', 'NameCodec: fromPresentation корня');
+
+/* ---------- JSON: RDATA roundtrip ---------- */
+
+foreach ([
+  [new ARecord('93.184.216.34'), '93.184.216.34'],
+  [new AaaaRecord('2001:db8::1'), '2001:db8::1'],
+  [new CnameRecord('cname.example.com'), 'cname.example.com.'],
+  [new MxRecord(10, 'mail.example.com'), '10 mail.example.com.'],
+  [new SoaRecord('ns1.example.com', 'admin.example.com', 2024010101, 7200, 900, 1209600, 3600),
+   'ns1.example.com. admin.example.com. 2024010101 7200 900 1209600 3600'],
+  [new SrvRecord(1, 5, 5061, 'sip.example.com'), '1 5 5061 sip.example.com.'],
+] as [$rec, $want]) {
+  $t->eq($rec->toJson(), $want, 'Rdata->toJson: ' . (string)$rec);
+  $clone = $rec::fromJson($want);
+  $t->eq($clone->serialize(), $rec->serialize(), 'Rdata JSON roundtrip (байты): ' . (string)$rec);
+}
+
+// TXT с кавычками и обратным слэшем: экранирование и возврат
+$txtTricky = new TxtRecord(['say "hi"', 'back\\slash']);
+$json = $txtTricky->toJson();
+$t->eq($json, '"say \\"hi\\"" "back\\\\slash"', 'TxtRecord->toJson: экранирование');
+$t->eq(TxtRecord::fromJson($json)->texts, $txtTricky->texts, 'TxtRecord JSON roundtrip с экранированием');
+
+// TXT из JSON реального вида (несколько строк)
+$txtBack = TxtRecord::fromJson('"part1" "part2"');
+$t->eq($txtBack->texts, ['part1', 'part2'], 'TxtRecord::fromJson: две строки');
+
+// CAA roundtrip
+$caaJ = CaaRecord::fromJson('0 issue "letsencrypt.org"');
+$t->eq([$caaJ->flags, $caaJ->tag, $caaJ->value], [0, 'issue', 'letsencrypt.org'], 'CaaRecord::fromJson');
+
+// Неизвестный тип через \#
+$unkBack = UnknownRdata::fromJson("\# 4 DEADBEEF");
+$t->eq($unkBack->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata::fromJson: \\#-формат');
+$t->eq($unkBack->toJson(), "\# 4 DEADBEEF", 'UnknownRdata->toJson: \\#-формат');
+$t->throws(fn() => UnknownRdata::fromJson("\# 5 DEADBEEF"), 'UnknownRdata: длина != hex -> исключение');
+
+/* ---------- Тип-мнемоника туда и обратно ---------- */
+
+$t->eq(DnsMessage::typeFromName('MX'), 15, 'typeFromName: MX -> 15');
+$t->eq(DnsMessage::typeFromName('A'), 1, 'typeFromName: A -> 1');
+$t->eq(DnsMessage::typeFromName('TYPE65'), 65, 'typeFromName: TYPE65 -> 65');
+$t->eq(DnsMessage::typeFromName('65'), 65, 'typeFromName: число -> 65');
+$t->eq(DnsMessage::typeName(DnsMessage::typeFromName('SRV')), 'SRV', 'typeName/typeFromName согласованы');
+$t->throws(fn() => DnsMessage::typeFromName('NOTAREALTYPE'), 'typeFromName: мусор -> исключение');
+
+/* ---------- JSON: запись целиком ---------- */
+
+$a = new DnsRecord('example.com', 1, 1, 300, new ARecord('93.184.216.34'));
+$aj = $a->toJson();
+$t->eq($aj, ['Name' => 'example.com.', 'Type' => 'A', 'TTL' => 300, 'Data' => '93.184.216.34'],
+  'DnsRecord->toJson: точная структура');
+$back = DnsRecord::fromJson($aj);
+$t->eq($back->serialize(), $a->serialize(), 'DnsRecord JSON roundtrip (байты)');
+
+// OPT: нестандартные поля EDNS переносятся
+$optJson = ['Name' => '.', 'Type' => 'OPT', 'Data' => "\# 0",
+      'UDPSize' => 1232, 'ExtRcode' => 1, 'Version' => 0, 'DO' => true];
+$optRec = DnsRecord::fromJson($optJson);
+$t->eq($optRec->rdata->udpSize, 1232, 'OPT JSON: UDPSize');
+$t->eq($optRec->rdata->extRcode, 1, 'OPT JSON: ExtRcode');
+$t->eq($optRec->rdata->do, true, 'OPT JSON: DO');
+
+/* ---------- JSON: сообщение целиком, круговое преобразование ---------- */
+
+$resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true, rcode: 0));
+$resp->questions[] = new DnsQuestion('example.com', 15);
+$resp->answers[] = new DnsRecord('example.com', 15, 1, 3600, new MxRecord(10, 'mail.example.com'));
+$resp->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord(['hello']));
+$resp->authority[] = new DnsRecord('example.com', 2, 1, 1800, new NsRecord('ns1.example.com'));
+
+$j = json_encode($resp->toJson(), JSON_UNESCAPED_SLASHES);
+$m = DnsMessage::fromJson($j);
+
+$t->eq($m->header->id, 0x1234, 'DnsMessage JSON: id');
+$t->eq($m->header->rcode, 0, 'DnsMessage JSON: Status -> rcode');
+$t->eq($m->header->ra, true, 'DnsMessage JSON: флаг RA');
+$t->eq(count($m->questions), 1, 'DnsMessage JSON: один вопрос');
+$t->eq($m->questions[0]->name, 'example.com', 'DnsMessage JSON: имя вопроса (без точки)');
+$t->eq($m->answers[0]->rdata->exchange, 'mail.example.com', 'DnsMessage JSON: MX exchange');
+$t->eq($m->answers[1]->rdata->texts, ['hello'], 'DnsMessage JSON: TXT');
+$t->eq($m->authority[0]->rdata->target, 'ns1.example.com', 'DnsMessage JSON: NS в Authority');
+
+// Повторный toJson - тот же JSON (после roundtrip содержимое не изменилось)
+$t->eq($m->toJson(), $resp->toJson(), 'DnsMessage JSON: двойной roundtrip стабилен');
+
+// Известный JSON-вектор (как их отдаёт Google /resolve)
+$gJson = '{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,'
+     . '"Question":[{"Name":"example.com.","Type":"A"}],'
+     . '"Answer":[{"Name":"example.com.","Type":"A","TTL":86400,"Data":"93.184.216.34"}]}';
+$g = DnsMessage::fromJson($gJson);
+$t->eq($g->answers[0]->rdata->ip, '93.184.216.34', 'Google JSON: rdata A-записи');
+$t->eq($g->answers[0]->ttl, 86400, 'Google JSON: TTL');
+$t->eq($g->rcode(), 0, 'Google JSON: rcode без OPT = 0');
+
+// Битый JSON -> исключение
+$t->throws(fn() => DnsMessage::fromJson('{не json'), 'DnsMessage::fromJson: невалидный JSON -> исключение');
+$t->throws(fn() => DnsMessage::fromJson('{"Status":0,"Question":[{"Name":"a.com."}]}'),
+  'DnsMessage::fromJson: вопрос без Type -> исключение');
+```
+
+## Нюансы, о которых стоит помнить
+
+- **Запрос в JSON - нестандартный путь.** RFC 8427 описывает в основном *ответы*; запрос обычно всё равно уходит в wire-формате (в base64url внутри GET). Именно так и работает `exchangeJson` для обычных DoH-серверов: wire туда - JSON обратно. ID в JSON-ответах обычно `0`, поэтому проверку ID в JSON-режиме не делаем - вместо неё совпадение вопроса проверяется по секции `Question`.
+- **Имена с точкой.** В JSON - `example.com.`, внутри наших объектов - без точки. Конверсия живёт в `NameCodec::toPresentation/fromPresentation`, классы об этом не знают.
+- **TXT и CAA экранируются** как C-строки: `\"` и `\\`. Для непечатаемых символов `StrCodec::escape` даёт восьмеричные `\ddd` - `stripcslashes` их корректно разворачивает.
+- **OPT в JSON** по RFC 8427 несёт `UDPSize`/`ExtRcode`/`Version`/`DO` отдельными ключами - это отражено и в тестах.
+- **У Google** для JSON есть готовый эндпоинт [https://dns.google/resolve](https://dns.google/resolve) - достаточно поставить `DohTransport::ENDPOINT` на него, `exchangeJson` сам переключится на параметры `name`/`type`.
+
+Хорошим следующим шагом будет единый метод `exchange()` с автоматическим выбором формата по заголовку `Accept` и кэшем по TTL - скажите, если нужно.

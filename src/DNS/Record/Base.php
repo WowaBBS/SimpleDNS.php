@@ -27,4 +27,15 @@ abstract class DnsRdata
     CaaRecord    ::test($t);
     UnknownRdata ::test($t);
   }
+  
+//****************************************************************
+// Json
+  
+  /** RDATA в презентационном формате (RFC 8427, поле Data) */
+  abstract public function toJson(): string;
+
+  /** Сборка RDATA из презентационного формата */
+  abstract public static function fromJson(string $data): static;
+  
+//****************************************************************
 }

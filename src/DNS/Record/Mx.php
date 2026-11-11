@@ -30,4 +30,22 @@ final class MxRecord extends DnsRdata
     [$mx2] = [MxRecord::deserialize($mx->serialize(), 0, strlen($mx->serialize()))];
     $t->eq([$mx2->pref, $mx2->exchange], [10, 'mail.example.com'], 'MxRecord: roundtrip');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string
+  {
+    return $this->pref . ' ' . NameCodec::toPresentation($this->exchange);
+  }
+
+  public static function fromJson(string $data): static
+  {
+    if (!preg_match('/^(\d+)\s+(\S+)$/', trim($data), $m))
+      throw new RuntimeException("Некорректный MX: $data");
+    
+    return new static((int)$m[1], NameCodec::fromPresentation($m[2]));
+  }
+
+//****************************************************************
 }

@@ -23,4 +23,25 @@ final class DnsQuestion
     [$type, $class] = array_values(unpack('n2', $msg, $off));
     return [new self($name, $type, $class), $off + 4];
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): array
+  {
+    return [
+      'Name' => NameCodec::toPresentation($this->name),
+      'Type' => DnsMessage::typeName($this->type),
+    ];
+  }
+
+  public static function fromJson(array $j): self
+  {
+    if (!isset($j['Name'], $j['Type']))
+      throw new RuntimeException('В вопросе нет полей Name/Type');
+    
+    return new self(NameCodec::fromPresentation($j['Name']), DnsMessage::typeFromName($j['Type']));
+  }
+
+//****************************************************************
 }

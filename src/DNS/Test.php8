@@ -15,4 +15,103 @@ OptRecord     ::test($t); // OPT / EDNS
 DnsMessage    ::test($t); // DnsMessage: круговое преобразование
 RdataRegistry ::test($t); // Реестр типов
 
+NameCodec     ::testJson($t); // NameCodec
+foreach ([
+  [new ARecord('93.184.216.34'), '93.184.216.34'],
+  [new AaaaRecord('2001:db8::1'), '2001:db8::1'],
+  [new CnameRecord('cname.example.com'), 'cname.example.com.'],
+  [new MxRecord(10, 'mail.example.com'), '10 mail.example.com.'],
+  [new SoaRecord('ns1.example.com', 'admin.example.com', 2024010101, 7200, 900, 1209600, 3600),
+   'ns1.example.com. admin.example.com. 2024010101 7200 900 1209600 3600'],
+  [new SrvRecord(1, 5, 5061, 'sip.example.com'), '1 5 5061 sip.example.com.'],
+] as [$rec, $want]) {
+  $t->eq($rec->toJson(), $want, 'Rdata->toJson: ' . (string)$rec);
+  $clone = $rec::fromJson($want);
+  $t->eq($clone->serialize(), $rec->serialize(), 'Rdata JSON roundtrip (байты): ' . (string)$rec);
+}
+
+// TXT с кавычками и обратным слэшем: экранирование и возврат
+$txtTricky = new TxtRecord(['say "hi"', 'back\\slash']);
+$json = $txtTricky->toJson();
+$t->eq($json, '"say \\"hi\\"" "back\\\\slash"', 'TxtRecord->toJson: экранирование');
+$t->eq(TxtRecord::fromJson($json)->texts, $txtTricky->texts, 'TxtRecord JSON roundtrip с экранированием');
+
+// TXT из JSON реального вида (несколько строк)
+$txtBack = TxtRecord::fromJson('"part1" "part2"');
+$t->eq($txtBack->texts, ['part1', 'part2'], 'TxtRecord::fromJson: две строки');
+
+// CAA roundtrip
+$caaJ = CaaRecord::fromJson('0 issue "letsencrypt.org"');
+$t->eq([$caaJ->flags, $caaJ->tag, $caaJ->value], [0, 'issue', 'letsencrypt.org'], 'CaaRecord::fromJson');
+
+// Неизвестный тип через \#
+$unkBack = UnknownRdata::fromJson("\# 4 DEADBEEF");
+$t->eq($unkBack->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata::fromJson: \\#-формат');
+$t->eq($unkBack->toJson(), "\# 4 DEADBEEF", 'UnknownRdata->toJson: \\#-формат');
+$t->throws(fn() => UnknownRdata::fromJson("\# 5 DEADBEEF"), 'UnknownRdata: длина != hex -> исключение');
+
+/* ---------- Тип-мнемоника туда и обратно ---------- */
+
+$t->eq(DnsMessage::typeFromName('MX'), 15, 'typeFromName: MX -> 15');
+$t->eq(DnsMessage::typeFromName('A'), 1, 'typeFromName: A -> 1');
+$t->eq(DnsMessage::typeFromName('TYPE65'), 65, 'typeFromName: TYPE65 -> 65');
+$t->eq(DnsMessage::typeFromName('65'), 65, 'typeFromName: число -> 65');
+$t->eq(DnsMessage::typeName(DnsMessage::typeFromName('SRV')), 'SRV', 'typeName/typeFromName согласованы');
+$t->throws(fn() => DnsMessage::typeFromName('NOTAREALTYPE'), 'typeFromName: мусор -> исключение');
+
+/* ---------- JSON: запись целиком ---------- */
+
+$a = new DnsRecord('example.com', 1, 1, 300, new ARecord('93.184.216.34'));
+$aj = $a->toJson();
+$t->eq($aj, ['Name' => 'example.com.', 'Type' => 'A', 'TTL' => 300, 'Data' => '93.184.216.34'],
+  'DnsRecord->toJson: точная структура');
+$back = DnsRecord::fromJson($aj);
+$t->eq($back->serialize(), $a->serialize(), 'DnsRecord JSON roundtrip (байты)');
+
+// OPT: нестандартные поля EDNS переносятся
+$optJson = ['Name' => '.', 'Type' => 'OPT', 'Data' => "\# 0",
+      'UDPSize' => 1232, 'ExtRcode' => 1, 'Version' => 0, 'DO' => true];
+$optRec = DnsRecord::fromJson($optJson);
+$t->eq($optRec->rdata->udpSize, 1232, 'OPT JSON: UDPSize');
+$t->eq($optRec->rdata->extRcode, 1, 'OPT JSON: ExtRcode');
+$t->eq($optRec->rdata->do, true, 'OPT JSON: DO');
+
+/* ---------- JSON: сообщение целиком, круговое преобразование ---------- */
+
+$resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true, rcode: 0));
+$resp->questions[] = new DnsQuestion('example.com', 15);
+$resp->answers[] = new DnsRecord('example.com', 15, 1, 3600, new MxRecord(10, 'mail.example.com'));
+$resp->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord(['hello']));
+$resp->authority[] = new DnsRecord('example.com', 2, 1, 1800, new NsRecord('ns1.example.com'));
+
+$j = json_encode($resp->toJson(), JSON_UNESCAPED_SLASHES);
+$m = DnsMessage::fromJson($j);
+
+$t->eq($m->header->id, 0x1234, 'DnsMessage JSON: id');
+$t->eq($m->header->rcode, 0, 'DnsMessage JSON: Status -> rcode');
+$t->eq($m->header->ra, true, 'DnsMessage JSON: флаг RA');
+$t->eq(count($m->questions), 1, 'DnsMessage JSON: один вопрос');
+$t->eq($m->questions[0]->name, 'example.com', 'DnsMessage JSON: имя вопроса (без точки)');
+$t->eq($m->answers[0]->rdata->exchange, 'mail.example.com', 'DnsMessage JSON: MX exchange');
+$t->eq($m->answers[1]->rdata->texts, ['hello'], 'DnsMessage JSON: TXT');
+$t->eq($m->authority[0]->rdata->target, 'ns1.example.com', 'DnsMessage JSON: NS в Authority');
+
+// Повторный toJson - тот же JSON (после roundtrip содержимое не изменилось)
+$t->eq($m->toJson(), $resp->toJson(), 'DnsMessage JSON: двойной roundtrip стабилен');
+
+// Известный JSON-вектор (как их отдаёт Google /resolve)
+$gJson = '{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,'
+     . '"Question":[{"Name":"example.com.","Type":"A"}],'
+     . '"Answer":[{"Name":"example.com.","Type":"A","TTL":86400,"Data":"93.184.216.34"}]}';
+$g = DnsMessage::fromJson($gJson);
+$t->eq($g->answers[0]->rdata->ip, '93.184.216.34', 'Google JSON: rdata A-записи');
+$t->eq($g->answers[0]->ttl, 86400, 'Google JSON: TTL');
+$t->eq($g->rcode(), 0, 'Google JSON: rcode без OPT = 0');
+
+// Битый JSON -> исключение
+$t->throws(fn() => DnsMessage::fromJson('{не json'), 'DnsMessage::fromJson: невалидный JSON -> исключение');
+$t->throws(fn() => DnsMessage::fromJson('{"Status":0,"Question":[{"Name":"a.com."}]}'),
+  'DnsMessage::fromJson: вопрос без Type -> исключение');
+
+
 $t->summary();

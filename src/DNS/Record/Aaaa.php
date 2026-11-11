@@ -24,4 +24,16 @@ final class AaaaRecord extends DnsRdata
    $t->eq((AaaaRecord::deserialize(inet_pton('2001:db8::1'), 0, 16))->ip, '2001:db8::1', 'AaaaRecord: roundtrip 2001:db8::1');
    $t->throws(fn() => AaaaRecord::deserialize(inet_pton('2001:db8::1'), 0, 15), 'AaaaRecord: rdLen != 16 -> исключение');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string { return $this->ip; }
+
+  public static function fromJson(string $data): static
+  {
+    $bin = inet_pton(trim($data)) ?: throw new RuntimeException("Некорректный IPv6: $data");
+    return new static(inet_ntop($bin));
+  }
+//****************************************************************
 }

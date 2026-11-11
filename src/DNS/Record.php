@@ -68,4 +68,54 @@ final class DnsRecord
     return sprintf('%-6s %-32s TTL=%-6d %s',
       DnsMessage::typeName($this->type), $this->name, $this->ttl, (string)$this->rdata);
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): array
+  {
+    $out = [
+      'Name' => NameCodec::toPresentation($this->name),
+      'Type' => DnsMessage::typeName($this->type),
+      'TTL'  => $this->ttl,
+      'Data' => $this->rdata->toJson(),
+    ];
+    if ($this->rdata instanceof OptRecord) {
+      // EDNS: свои поля (RFC 8427, 2.4.2)
+      $out['UDPSize'] = $this->rdata->udpSize;
+      $out['ExtRcode'] = $this->rdata->extRcode;
+      $out['Version'] = $this->rdata->version;
+      $out['DO'] = $this->rdata->do;
+    }
+    return $out;
+  }
+
+  public static function fromJson(array $j): self
+  {
+    foreach (['Name', 'Type', 'Data'] as $k) {
+      if (!array_key_exists($k, $j)) {
+        throw new RuntimeException("В записи нет поля $k");
+      }
+    }
+    $type = DnsMessage::typeFromName($j['Type']);
+    $cls  = RdataRegistry::classFor($type);
+    $rdata = $cls::fromJson($j['Data']);
+
+    if ($type === 41 && $rdata instanceof OptRecord) {
+      $rdata->udpSize  = (int)($j['UDPSize'  ] ?? 4096);
+      $rdata->extRcode = (int)($j['ExtRcode' ] ?? 0);
+      $rdata->version  = (int)($j['Version'  ] ?? 0);
+      $rdata->do       = (bool)($j['DO'      ] ?? false);
+    }
+
+    return new self(
+      NameCodec::fromPresentation($j['Name']),
+      $type,
+      (int)($j['Class'] ?? 1),
+      (int)($j['TTL'] ?? 0),
+      $rdata,
+    );
+  }
+  
+//****************************************************************
 }

@@ -25,4 +25,17 @@ final class ARecord extends DnsRdata
     $t->eq((ARecord::deserialize("\xC0\xA8\x01\x01", 0, 4))->ip, '192.168.1.1', 'ARecord: deserialize');
     $t->throws(fn() => (new ARecord('999.1.1.1'))->serialize(), 'ARecord: некорректный IP -> исключение');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string { return $this->ip; }
+
+  public static function fromJson(string $data): static
+  {
+    $bin = inet_pton(trim($data)) ?: throw new RuntimeException("Некорректный IPv4: $data");
+    return new static(inet_ntop($bin));
+  }
+
+//****************************************************************
 }

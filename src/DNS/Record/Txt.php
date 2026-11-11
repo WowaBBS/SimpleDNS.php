@@ -56,4 +56,26 @@ final class TxtRecord extends DnsRdata
     $txtMulti2 = TxtRecord::deserialize($txtMulti->serialize(), 0, strlen($txtMulti->serialize()));
     $t->eq($txtMulti2->texts, ['a', 'b'], 'TxtRecord: несколько строк roundtrip');
   }
+
+//****************************************************************
+// Json
+
+  public function toJson(): string
+  {
+    $parts = [];
+    foreach ($this->texts as $t) {
+      $parts[] = '"' . StrCodec::escape($t) . '"';
+    }
+    return implode(' ', $parts);
+  }
+
+  public static function fromJson(string $data): static
+  {
+    if (!preg_match_all('/"((?:[^"\\\\]|\\\\.)*)"/', $data, $m))
+      throw new RuntimeException("Некорректный TXT: $data");
+    
+    return new static(array_map(StrCodec::unescape(...), $m[1]));
+  }
+
+//****************************************************************
 }
