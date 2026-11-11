@@ -1,0 +1,732 @@
+Можешь для каждого типа сообщения сделать класс, который хранит поля сообщения и методы сериализации и десериализации для него?
+
+Вот переработанная версия: каждый тип RDATA - свой класс, у всех общий контракт <сериализовать / десериализовать>, сверху - `DnsHeader`, `DnsQuestion`, `DnsRecord` и `DnsMessage`. Транспорт DoH оставил минимальным, вся логика теперь в объектах сообщений.
+
+```php
+<?php
+declare(strict_types=1);
+
+/* ============================================================
+ * Кодирование имён (RFC 1035, 3.1 и 4.1.4)
+ * Сериализация - без сжатия (это допустимо по RFC),
+ * десериализация - с полной поддержкой compression pointers.
+ * ============================================================ */
+
+final class NameCodec
+{
+    public static function encode(string $name): string
+    {
+        $out = '';
+        foreach (explode('.', rtrim($name, '.')) as $label) {
+            $len = strlen($label);
+            if ($len === 0 || $len > 63) {
+                throw new InvalidArgumentException("Некорректная метка в имени: '$label'");
+            }
+            $out .= chr($len) . $label;
+        }
+        return $out . "\0";
+    }
+
+    /** @return array{0:string, 1:int} [имя, смещение сразу после имени в буфере] */
+    public static function decode(string $msg, int $off): array
+    {
+        $labels = [];
+        $end = null;
+        $jumps = 0;
+        $max = strlen($msg);
+
+        while (true) {
+            if ($off >= $max) {
+                throw new RuntimeException('Имя выходит за границы сообщения');
+            }
+            $len = ord($msg[$off]);
+
+            if ($len === 0) {                 // конец имени
+                $off++;
+                break;
+            }
+
+            if (($len & 0xC0) === 0xC0) {     // compression pointer
+                if ($off + 1 >= $max) {
+                    throw new RuntimeException('Обрезанный compression pointer');
+                }
+                if ($end === null) {
+                    $end = $off + 2;          // где кончилось бы имя без указателя
+                }
+                if (++$jumps > 128) {
+                    throw new RuntimeException('Зацикливание compression pointers');
+                }
+                $off = (($len & 0x3F) << 8) | ord($msg[$off + 1]);
+                continue;
+            }
+
+            if (($len & 0xC0) !== 0) {
+                throw new RuntimeException("Некорректная длина метки: $len");
+            }
+
+            $labels[] = substr($msg, $off + 1, $len);
+            $off += 1 + $len;
+        }
+
+        return [implode('.', $labels), $end ?? $off];
+    }
+}
+
+/* ============================================================
+ * Заголовок сообщения (12 байт)
+ * ============================================================ */
+
+final class DnsHeader
+{
+    private const RCODES = [
+        0 => 'NOERROR', 1 => 'FORMERR', 2 => 'SERVFAIL', 3 => 'NXDOMAIN',
+        4 => 'NOTIMP',  5 => 'REFUSED',
+    ];
+
+    public function __construct(
+        public int  $id = 0,
+        public bool $qr = false,      // ответ (0 = запрос)
+        public int  $opcode = 0,
+        public bool $aa = false,
+        public bool $tc = false,
+        public bool $rd = false,
+        public bool $ra = false,
+        public bool $z = false,
+        public bool $ad = false,
+        public bool $cd = false,
+        public int  $rcode = 0,
+        public int  $qdCount = 0,
+        public int  $anCount = 0,
+        public int  $nsCount = 0,
+        public int  $arCount = 0,
+    ) {}
+
+    public function serialize(): string
+    {
+        $flags = ($this->qr    ? 1 << 15 : 0)
+               | (($this->opcode & 0xF) << 11)
+               | ($this->aa ? 1 << 10 : 0)
+               | ($this->tc ? 1 << 9  : 0)
+               | ($this->rd ? 1 << 8  : 0)
+               | ($this->ra ? 1 << 7  : 0)
+               | ($this->z  ? 1 << 6  : 0)
+               | ($this->ad ? 1 << 5  : 0)
+               | ($this->cd ? 1 << 4  : 0)
+               | ($this->rcode & 0xF);
+
+        return pack('nnnnnn', $this->id, $flags, $this->qdCount, $this->anCount, $this->nsCount, $this->arCount);
+    }
+
+    public static function deserialize(string $buf): self
+    {
+        if (strlen($buf) < 12) {
+            throw new RuntimeException('Ответ короче DNS-заголовка');
+        }
+        [$id, $flags, $qd, $an, $ns, $ar] = array_values(unpack('n6', substr($buf, 0, 12)));
+
+        return new self(
+            id:      $id,
+            qr:      (bool)(($flags >> 15) & 1),
+            opcode:  ($flags >> 11) & 0xF,
+            aa:      (bool)(($flags >> 10) & 1),
+            tc:      (bool)(($flags >> 9)  & 1),
+            rd:      (bool)(($flags >> 8)  & 1),
+            ra:      (bool)(($flags >> 7)  & 1),
+            z:       (bool)(($flags >> 6)  & 1),
+            ad:      (bool)(($flags >> 5)  & 1),
+            cd:      (bool)(($flags >> 4)  & 1),
+            rcode:   $flags & 0xF,
+            qdCount: $qd,
+            anCount: $an,
+            nsCount: $ns,
+            arCount: $ar,
+        );
+    }
+
+    public static function rcodeName(int $rcode): string
+    {
+        return self::RCODES[$rcode] ?? "RCODE$rcode";
+    }
+}
+
+/* ============================================================
+ * Секция QUESTION
+ * ============================================================ */
+
+final class DnsQuestion
+{
+    public function __construct(
+        public string $name,
+        public int    $type,
+        public int    $class = 1, // IN
+    ) {}
+
+    public function serialize(): string
+    {
+        return NameCodec::encode($this->name) . pack('nn', $this->type, $this->class);
+    }
+
+    /** @return array{0:self, 1:int} */
+    public static function deserialize(string $msg, int $off): array
+    {
+        [$name, $off] = NameCodec::decode($msg, $off);
+        [, $type, $class] = array_values(unpack('n2', substr($msg, $off, 4)));
+        return [new self($name, $type, $class), $off + 4];
+    }
+}
+
+/* ============================================================
+ * RDATA: базовый класс и конкретные типы записей
+ * ============================================================ */
+
+abstract class DnsRdata
+{
+    /** Бинарное представление RDATA (имена - без сжатия) */
+    abstract public function serialize(): string;
+
+    /**
+     * Разбор RDATA. $off - абсолютное смещение начала RDATA в сообщении
+     * (нужно целиком сообщение, т.к. имена внутри RDATA могут быть сжаты указателями).
+     */
+    abstract public static function deserialize(string $msg, int $off, int $rdLen): static;
+
+    abstract public function __toString(): string;
+}
+
+/* --- A --- */
+final class ARecord extends DnsRdata
+{
+    public function __construct(public string $ip) {}
+
+    public function serialize(): string
+    {
+        return inet_pton($this->ip) ?: throw new InvalidArgumentException("Некорректный IPv4: {$this->ip}");
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        if ($rdLen !== 4) {
+            throw new RuntimeException("Некорректная длина A-записи: $rdLen");
+        }
+        return new static(inet_ntop(substr($msg, $off, 4)));
+    }
+
+    public function __toString(): string { return $this->ip; }
+}
+
+/* --- AAAA --- */
+final class AaaaRecord extends DnsRdata
+{
+    public function __construct(public string $ip) {}
+
+    public function serialize(): string
+    {
+        return inet_pton($this->ip) ?: throw new InvalidArgumentException("Некорректный IPv6: {$this->ip}");
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        if ($rdLen !== 16) {
+            throw new RuntimeException("Некорректная длина AAAA-записи: $rdLen");
+        }
+        return new static(inet_ntop(substr($msg, $off, 16)));
+    }
+
+    public function __toString(): string { return $this->ip; }
+}
+
+/* --- NS / CNAME / PTR: RDATA - одно имя --- */
+abstract class NamedRdata extends DnsRdata
+{
+    public function __construct(public string $target) {}
+
+    public function serialize(): string
+    {
+        return NameCodec::encode($this->target);
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        [$name] = NameCodec::decode($msg, $off);
+        return new static($name);
+    }
+
+    public function __toString(): string { return $this->target; }
+}
+
+final class NsRecord    extends NamedRdata {}
+final class CnameRecord extends NamedRdata {}
+final class PtrRecord   extends NamedRdata {}
+
+/* --- MX --- */
+final class MxRecord extends DnsRdata
+{
+    public function __construct(
+        public int    $pref,
+        public string $exchange,
+    ) {}
+
+    public function serialize(): string
+    {
+        return pack('n', $this->pref) . NameCodec::encode($this->exchange);
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        if ($rdLen < 3) {
+            throw new RuntimeException("Некорректная длина MX-записи: $rdLen");
+        }
+        $pref = unpack('n', substr($msg, $off, 2))[1];
+        [$exchange] = NameCodec::decode($msg, $off + 2);
+        return new static($pref, $exchange);
+    }
+
+    public function __toString(): string { return "{$this->pref} {$this->exchange}"; }
+}
+
+/* --- TXT --- */
+final class TxtRecord extends DnsRdata
+{
+    /** @param string[] $texts */
+    public function __construct(public array $texts) {}
+
+    public function serialize(): string
+    {
+        $out = '';
+        foreach ($this->texts as $t) {
+            if ($t === '') {
+                $out .= "\0";
+                continue;
+            }
+            foreach (str_split($t, 255) as $chunk) {  // строка длиннее 255 байт режется на куски
+                $out .= chr(strlen($chunk)) . $chunk;
+            }
+        }
+        return $out;
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        $texts = [];
+        $p = 0;
+        while ($p < $rdLen) {
+            $l = ord($msg[$off + $p]);
+            $texts[] = substr($msg, $off + $p + 1, $l);
+            $p += 1 + $l;
+        }
+        return new static($texts);
+    }
+
+    public function __toString(): string { return implode('', $this->texts); }
+}
+
+/* --- SOA --- */
+final class SoaRecord extends DnsRdata
+{
+    public function __construct(
+        public string $mname,
+        public string $rname,
+        public int $serial,
+        public int $refresh,
+        public int $retry,
+        public int $expire,
+        public int $minimum,
+    ) {}
+
+    public function serialize(): string
+    {
+        return NameCodec::encode($this->mname) . NameCodec::encode($this->rname)
+            . pack('N5', $this->serial, $this->refresh, $this->retry, $this->expire, $this->minimum);
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        [$mname, $off] = NameCodec::decode($msg, $off);
+        [$rname, $off] = NameCodec::decode($msg, $off);
+        $n = unpack('Nserial/Nrefresh/Nretry/Nexpire/Nmin', substr($msg, $off, 20));
+        return new static($mname, $rname, $n['serial'], $n['refresh'], $n['retry'], $n['expire'], $n['min']);
+    }
+
+    public function __toString(): string
+    {
+        return sprintf('%s %s serial=%u refresh=%u retry=%u expire=%u min=%u',
+            $this->mname, $this->rname, $this->serial, $this->refresh, $this->retry, $this->expire, $this->minimum);
+    }
+}
+
+/* --- SRV --- */
+final class SrvRecord extends DnsRdata
+{
+    public function __construct(
+        public int    $priority,
+        public int    $weight,
+        public int    $port,
+        public string $target,
+    ) {}
+
+    public function serialize(): string
+    {
+        return pack('nnn', $this->priority, $this->weight, $this->port) . NameCodec::encode($this->target);
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        if ($rdLen < 7) {
+            throw new RuntimeException("Некорректная длина SRV-записи: $rdLen");
+        }
+        ['priority' => $p, 'weight' => $w, 'port' => $pt] =
+            unpack('npriority/nweight/nport', substr($msg, $off, 6));
+        [$target] = NameCodec::decode($msg, $off + 6);
+        return new static($p, $w, $pt, $target);
+    }
+
+    public function __toString(): string
+    {
+        return "{$this->priority} {$this->weight} {$this->port} {$this->target}";
+    }
+}
+
+/* --- CAA --- */
+final class CaaRecord extends DnsRdata
+{
+    public function __construct(
+        public int    $flags,
+        public string $tag,
+        public string $value,
+    ) {}
+
+    public function serialize(): string
+    {
+        if (strlen($this->tag) > 255) {
+            throw new InvalidArgumentException('CAA tag длиннее 255 байт');
+        }
+        return chr($this->flags) . chr(strlen($this->tag)) . $this->tag . $this->value;
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        if ($rdLen < 2) {
+            throw new RuntimeException("Некорректная длина CAA-записи: $rdLen");
+        }
+        $flags  = ord($msg[$off]);
+        $tagLen = ord($msg[$off + 1]);
+        if ($tagLen + 2 > $rdLen) {
+            throw new RuntimeException('CAA tag выходит за границы RDATA');
+        }
+        $tag   = substr($msg, $off + 2, $tagLen);
+        $value = substr($msg, $off + 2 + $tagLen);
+        return new static($flags, $tag, $value);
+    }
+
+    public function __toString(): string
+    {
+        return sprintf('%d %s "%s"', $this->flags, $this->tag, $this->value);
+    }
+}
+
+/* --- OPT (EDNS0) --- */
+final class OptRecord extends DnsRdata
+{
+    public function __construct(
+        public int    $udpSize = 4096,
+        public int    $extRcode = 0,
+        public int    $version = 0,
+        public bool   $do = false,      // флаг DNSSEC OK
+        public string $options = '',    // сырые EDNS-опции: OPTCODE(2) OPTLEN(2) DATA...
+    ) {}
+
+    public function serialize(): string
+    {
+        return $this->options;
+    }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        // extRcode / version / DO лежат в TTL ресурсной записи - их
+        // восстанавливает DnsRecord::deserialize(), здесь только опции
+        return new static(options: substr($msg, $off, $rdLen));
+    }
+
+    public function __toString(): string
+    {
+        return '[EDNS0 options=' . strlen($this->options) . 'B]';
+    }
+}
+
+/* --- неизвестный тип: RDATA как есть --- */
+final class UnknownRdata extends DnsRdata
+{
+    public function __construct(public string $raw) {}
+
+    public function serialize(): string { return $this->raw; }
+
+    public static function deserialize(string $msg, int $off, int $rdLen): static
+    {
+        return new static(substr($msg, $off, $rdLen));
+    }
+
+    public function __toString(): string { return bin2hex($this->raw); }
+}
+
+/* ============================================================
+ * Реестр: код типа -> класс RDATA
+ * ============================================================ */
+
+final class RdataRegistry
+{
+    private const MAP = [
+        1   => ARecord::class,
+        2   => NsRecord::class,
+        5   => CnameRecord::class,
+        6   => SoaRecord::class,
+        12  => PtrRecord::class,
+        15  => MxRecord::class,
+        16  => TxtRecord::class,
+        28  => AaaaRecord::class,
+        33  => SrvRecord::class,
+        41  => OptRecord::class,
+        257 => CaaRecord::class,
+    ];
+
+    public static function classFor(int $type): string
+    {
+        return self::MAP[$type] ?? UnknownRdata::class;
+    }
+}
+
+/* ============================================================
+ * Ресурсная запись (общая обёртка name/type/class/ttl/rdata)
+ * ============================================================ */
+
+final class DnsRecord
+{
+    public function __construct(
+        public string   $name,
+        public int      $type,
+        public int      $class = 1,
+        public int      $ttl = 0,
+        public ?DnsRdata $rdata = null,
+    ) {}
+
+    /** Фабрика OPT-записи для EDNS0 */
+    public static function opt(int $udpSize = 4096, bool $dnssec = false): self
+    {
+        return new self('', 41, $udpSize, 0, new OptRecord(0, 0, $dnssec));
+    }
+
+    public function serialize(): string
+    {
+        $rdata = $this->rdata?->serialize() ?? '';
+
+        // у OPT класс-поле несёт UDP-размер, TTL - extRcode/version/DO
+        $class = $this->class;
+        $ttl   = $this->ttl;
+        if ($this->rdata instanceof OptRecord) {
+            $class = $this->rdata->udpSize;
+            $ttl   = ($this->rdata->extRcode << 24)
+                   | (($this->rdata->version & 0xFF) << 16)
+                   | ($this->rdata->do ? 1 << 15 : 0);
+        }
+
+        return NameCodec::encode($this->name)
+            . pack('nnNn', $this->type, $class, $ttl, strlen($rdata))
+            . $rdata;
+    }
+
+    /** @return array{0:self, 1:int} */
+    public static function deserialize(string $msg, int $off): array
+    {
+        [$name, $off] = NameCodec::decode($msg, $off);
+        [, $type, $class, $ttl, $rdLen] = array_values(unpack('nnNn', substr($msg, $off, 10)));
+        $off += 10;
+
+        $cls   = RdataRegistry::classFor($type);
+        $rdata = $cls::deserialize($msg, $off, $rdLen);
+
+        $record = new self($name, $type, $class, $ttl, $rdata);
+
+        if ($type === 41 && $rdata instanceof OptRecord) {
+            $rdata->udpSize  = $class;
+            $rdata->extRcode = ($ttl >> 24) & 0xFF;
+            $rdata->version  = ($ttl >> 16) & 0xFF;
+            $rdata->do       = (bool)(($ttl >> 15) & 1);
+        }
+
+        return [$record, $off + $rdLen];
+    }
+
+    public function __toString(): string
+    {
+        return sprintf('%-6s %-32s TTL=%-6d %s',
+            DnsMessage::typeName($this->type), $this->name, $this->ttl, (string)$this->rdata);
+    }
+}
+
+/* ============================================================
+ * Сообщение целиком
+ * ============================================================ */
+
+final class DnsMessage
+{
+    private const TYPE_NAMES = [
+        1 => 'A', 2 => 'NS', 5 => 'CNAME', 6 => 'SOA', 12 => 'PTR',
+        15 => 'MX', 16 => 'TXT', 28 => 'AAAA', 33 => 'SRV', 41 => 'OPT', 257 => 'CAA',
+    ];
+
+    public const CLASS_IN = 1;
+
+    public function __construct(
+        public DnsHeader $header = new DnsHeader(),
+        /** @var DnsQuestion[] */ public array $questions  = [],
+        /** @var DnsRecord[]   */ public array $answers    = [],
+        /** @var DnsRecord[]   */ public array $authority  = [],
+        /** @var DnsRecord[]   */ public array $additional = [],
+    ) {}
+
+    /** Готовый запрос: RD=1, один вопрос, EDNS0 OPT */
+    public static function query(string $domain, int $type, bool $dnssec = false): self
+    {
+        $m = new self(new DnsHeader(id: random_int(0, 65535), rd: true));
+        $m->questions[] = new DnsQuestion($domain, $type);
+        $m->additional[] = DnsRecord::opt(4096, $dnssec);
+        return $m;
+    }
+
+    public function serialize(): string
+    {
+        // счётчики секций - из фактического содержимого
+        $this->header->qdCount = count($this->questions);
+        $this->header->anCount = count($this->answers);
+        $this->header->nsCount = count($this->authority);
+        $this->header->arCount = count($this->additional);
+
+        $out = $this->header->serialize();
+        foreach ($this->questions as $q) {
+            $out .= $q->serialize();
+        }
+        foreach ([$this->answers, $this->authority, $this->additional] as $section) {
+            foreach ($section as $record) {
+                $out .= $record->serialize();
+            }
+        }
+        return $out;
+    }
+
+    public static function deserialize(string $buf): self
+    {
+        $header = DnsHeader::deserialize($buf);
+        $off = 12;
+
+        $questions = [];
+        for ($i = 0; $i < $header->qdCount; $i++) {
+            [$question, $off] = DnsQuestion::deserialize($buf, $off);
+            $questions[] = $question;
+        }
+
+        $sections = ['answers' => [], 'authority' => [], 'additional' => []];
+        foreach (['answers' => $header->anCount, 'authority' => $header->nsCount, 'additional' => $header->arCount] as $key => $count) {
+            for ($i = 0; $i < $count; $i++) {
+                [$record, $off] = DnsRecord::deserialize($buf, $off);
+                $sections[$key][] = $record;
+            }
+        }
+
+        return new self($header, $questions, $sections['answers'], $sections['authority'], $sections['additional']);
+    }
+
+    /** Полный rcode с учётом старших 8 бит из OPT (EDNS) */
+    public function rcode(): int
+    {
+        foreach ($this->additional as $r) {
+            if ($r->rdata instanceof OptRecord) {
+                return ($r->rdata->extRcode << 4) | $this->header->rcode;
+            }
+        }
+        return $this->header->rcode;
+    }
+
+    public static function typeName(int $type): string
+    {
+        return self::TYPE_NAMES[$type] ?? "TYPE$type";
+    }
+}
+
+/* ============================================================
+ * Транспорт DoH (RFC 8484) - минимум логики
+ * ============================================================ */
+
+final class DohTransport
+{
+    public const ENDPOINT = 'https://dns.google/dns-query'; // или https://cloudflare-dns.com/dns-query
+
+    public static function exchange(DnsMessage $request, int $timeout = 5): DnsMessage
+    {
+        $context = stream_context_create([
+            'http' => [
+                'method'  => 'POST',
+                'header'  => "Content-Type: application/dns-message\r\nAccept: application/dns-message\r\n",
+                'content' => $request->serialize(),
+                'timeout' => $timeout,
+                'ignore_errors' => true,
+            ],
+            'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
+        ]);
+
+        $response = @file_get_contents(self::ENDPOINT, false, $context);
+        if ($response === false) {
+            throw new RuntimeException('Не удалось соединиться с DoH-сервером: '
+                . (error_get_last()['message'] ?? '?'));
+        }
+        if (!preg_match('/^HTTP\/\S+\s+2\d\d/', $http_response_header[0] ?? '')) {
+            throw new RuntimeException('DoH-сервер вернул ошибку: ' . ($http_response_header[0] ?? 'нет заголовков'));
+        }
+
+        $reply = DnsMessage::deserialize($response);
+
+        if ($reply->header->id !== $request->header->id) {
+            throw new RuntimeException('ID ответа не совпадает с ID запроса');
+        }
+        if ($reply->header->tc) {
+            throw new RuntimeException('Ответ усечён (TC=1)');
+        }
+
+        return $reply;
+    }
+}
+
+/* ============================================================
+ * Пример использования
+ * ============================================================ */
+
+try {
+    foreach ([['yandex.ru', 1], ['gmail.com', 15], ['cloudflare.com', 28]] as [$domain, $type]) {
+        echo "--- $domain (" . DnsMessage::typeName($type) . ") ---\n";
+        $reply = DohTransport::exchange(DnsMessage::query($domain, $type));
+        echo 'rcode: ', DnsHeader::rcodeName($reply->rcode()), "\n";
+        foreach ($reply->answers as $r) {
+            echo '  ', $r, "\n";
+        }
+        echo "\n";
+    }
+
+    // Ручная сборка тоже работает:
+    $custom = new DnsMessage(new DnsHeader(id: 1234, rd: true));
+    $custom->questions[] = new DnsQuestion('_dmarc.yandex.ru', 16);
+    foreach (DohTransport::exchange($custom)->answers as $r) {
+        echo $r, "\n";
+    }
+} catch (Throwable $e) {
+    fwrite(STDERR, 'Ошибка: ' . $e->getMessage() . PHP_EOL);
+    exit(1);
+}
+```
+
+Как это устроено:
+
+- **Контракт RDATA.** У каждого типа два метода: `serialize()` возвращает байты RDATA, `deserialize($msg, $off, $rdLen)` собирает объект обратно. В `deserialize` передаётся всё сообщение целиком, потому что имена внутри RDATA (у MX, CNAME, SOA, SRV) могут быть сжаты указателями в начало буфера - разбирать их нужно в контексте всего сообщения.
+- **Асимметрия сжатия.** При сериализации имена пишутся без сжатия - это законно по RFC 1035, сервер обязан понимать оба варианта. При десериализации указатели обрабатываются полностью, с защитой от зацикливания.
+- **Реестр типов.** `RdataRegistry` сопоставляет код типа классу, поэтому добавление нового типа - это один новый класс и одна строчка в карте. Незнакомые типы попадают в `UnknownRdata` и сохраняются/передаются байт в байт.
+- **OPT-запись особенная.** У неё класс-поле несёт UDP-размер, а TTL - старшие биты rcode, версию и флаг DO. `DnsRecord` знает об этом и при сериализации/десериализации перекладывает значения в `OptRecord`, так что наружу всё выглядит как обычное поле.
+- **Проверки целостности** живут на уровне транспорта: совпадение ID и флаг TC - в `DohTransport::exchange`, границы буфера и зацикливание указателей - в `NameCodec`.
+
+Если нужен следующий шаг, логичным будет кэш ответов по TTL (сейчас объекты не знают, откуда взялись) или поддержка GET-режима DoH с base64url - скажите, что интереснее.

@@ -1,0 +1,266 @@
+Можешь написать тесты проверки сериализации-десериализации?
+
+Вот набор тестов. Так как исходная задача была <без сторонних библиотек>, тесты тоже написаны на чистом PHP - это один файл, который запускается прямо `php doh_tests.php` и печатает пройдено/упало. Если у вас стоит PHPUnit, скажите - перенесу в `PHPUnit\Framework\TestCase`, структура case'ов почти не изменится.
+
+Сохраните классы из предыдущего ответа в `doh_client.php` (в начале файла всё, от `NameCodec` до `DohTransport`), а это - в `doh_tests.php`:
+
+```php
+<?php
+declare(strict_types=1);
+
+require __DIR__ . '/doh_client.php';
+
+final class TestRunner
+{
+    public int $pass = 0;
+    public int $fail = 0;
+
+    public function ok(bool $cond, string $name): void
+    {
+        if ($cond) {
+            $this->pass++;
+            echo "PASS  $name\n";
+        } else {
+            $this->fail++;
+            echo "FAIL  $name\n";
+        }
+    }
+
+    public function eq(mixed $got, mixed $want, string $name): void
+    {
+        if ($got === $want) {
+            $this->pass++;
+            echo "PASS  $name\n";
+        } else {
+            $this->fail++;
+            echo "FAIL  $name\n      ожидалось: " . var_export($want, true)
+               . "\n      получено:  " . var_export($got, true) . "\n";
+        }
+    }
+
+    public function throws(callable $fn, string $name): void
+    {
+        try {
+            $fn();
+            $this->fail++;
+            echo "FAIL  $name - исключение не выброшено\n";
+        } catch (Throwable) {
+            $this->pass++;
+            echo "PASS  $name\n";
+        }
+    }
+
+    public function summary(): void
+    {
+        printf("\nИтог: %d пройдено, %d упало\n", $this->pass, $this->fail);
+        exit($this->fail > 0 ? 1 : 0);
+    }
+}
+
+function hexs(string $bin): string
+{
+    return strtoupper(implode(' ', str_split(bin2hex($bin), 2)));
+}
+
+$t = new TestRunner();
+
+/* ---------- NameCodec ---------- */
+
+// Круговой преобразование имени
+foreach (['example.com', 'www.example.com', 'a.b.c.d.e.f', 'xn--80ak6aa92e.ru'] as $name) {
+    [$decoded] = NameCodec::decode(NameCodec::encode($name), 0);
+    $t->eq($decoded, $name, "NameCodec roundtrip: $name");
+}
+
+// Корень: "." кодируется одним нулевым байтом и декодируется в пустую строку
+$t->eq(NameCodec::encode('.'), "\0", 'NameCodec: корень -> 1 байт');
+$t->eq(NameCodec::decode("\0", 0)[0], '', 'NameCodec: корень -> пустая строка');
+
+// Точный байтовый вывод: a.b -> 01 61 01 62 00
+$t->eq(hexs(NameCodec::encode('a.b')), '01 61 01 62 00', 'NameCodec: точные байты');
+
+// Ошибки: метка длиннее 63 байт, пустая метка (двойная точка)
+$t->throws(fn() => NameCodec::encode(str_repeat('x', 64)), 'NameCodec: метка 64 байта -> исключение');
+$t->throws(fn() => NameCodec::encode('a..b'), 'NameCodec: пустая метка -> исключение');
+
+// Декодирование compression pointer: имя в начале, указатель позже
+$buf = "\x03www\x07example\x03com\x00" . str_repeat("\0", 8) . "\xC0\x00\x00\x01\x00\x01";
+$t->eq(NameCodec::decode($buf, 27)[0], 'www.example.com', 'NameCodec: указатель на начало буфера');
+
+// Зацикленный указатель -> исключение (защита от бесконечного цикла)
+$t->throws(fn() => NameCodec::decode("\xC0\x00", 0), 'NameCodec: зацикленный указатель -> исключение');
+
+// Обрезанный указатель -> исключение
+$t->throws(fn() => NameCodec::decode("\xC0", 0), 'NameCodec: обрезанный указатель -> исключение');
+
+/* ---------- DnsHeader ---------- */
+
+$h = new DnsHeader(id: 0x1234, qr: true, rd: true, rcode: 3);
+$t->eq(hexs($h->serialize()), '12 34 81 83 00 00 00 00 00 00 00 00', 'DnsHeader: точные байты (QR|RD, rcode=3)');
+
+$h2 = DnsHeader::deserialize($h->serialize());
+$t->eq($h2->id, 0x1234, 'DnsHeader: roundtrip id');
+$t->eq($h2->qr, true, 'DnsHeader: roundtrip qr');
+$t->eq($h2->rd, true, 'DnsHeader: roundtrip rd');
+$t->eq($h2->rcode, 3, 'DnsHeader: roundtrip rcode');
+$t->eq($h2->ra, false, 'DnsHeader: ra по умолчанию false');
+
+$t->eq(DnsHeader::rcodeName(0), 'NOERROR', 'DnsHeader: rcodeName(0)');
+$t->eq(DnsHeader::rcodeName(3), 'NXDOMAIN', 'DnsHeader: rcodeName(3)');
+
+$t->throws(fn() => DnsHeader::deserialize('1234'), 'DnsHeader: буфер < 12 байт -> исключение');
+
+/* ---------- RDATA: известные векторы ---------- */
+
+$t->eq(hexs((new ARecord('192.168.1.1'))->serialize()), 'C0 A8 01 01', 'ARecord: точные байты 192.168.1.1');
+$t->eq((ARecord::deserialize("\xC0\xA8\x01\x01", 0, 4))->ip, '192.168.1.1', 'ARecord: deserialize');
+$t->throws(fn() => (new ARecord('999.1.1.1'))->serialize(), 'ARecord: некорректный IP -> исключение');
+
+$t->eq((AaaaRecord::deserialize(inet_pton('2001:db8::1'), 0, 16))->ip, '2001:db8::1', 'AaaaRecord: roundtrip 2001:db8::1');
+$t->throws(fn() => AaaaRecord::deserialize(inet_pton('2001:db8::1'), 0, 15), 'AaaaRecord: rdLen != 16 -> исключение');
+
+$mx = new MxRecord(10, 'mail.example.com');
+[$mx2] = [MxRecord::deserialize($mx->serialize(), 0, strlen($mx->serialize()))];
+$t->eq([$mx2->pref, $mx2->exchange], [10, 'mail.example.com'], 'MxRecord: roundtrip');
+
+$txt = new TxtRecord(['v=spf1 include:_spf.example.com ~all']);
+$txt2 = TxtRecord::deserialize($txt->serialize(), 0, strlen($txt->serialize()));
+$t->eq((string)$txt2, 'v=spf1 include:_spf.example.com ~all', 'TxtRecord: roundtrip одной строки');
+
+// TXT длиннее 255 байт: режется на куски, при повторной сериализации байты совпадают
+$long = str_repeat('x', 300);
+$txtLong = new TxtRecord([$long]);
+$wire = $txtLong->serialize();
+$txtLong2 = TxtRecord::deserialize($wire, 0, strlen($wire));
+$t->eq(strlen($wire), 255 + 1 + 45 + 1, 'TxtRecord: 300 символов -> два куска 255+45');
+$t->eq($txtLong2->serialize(), $wire, 'TxtRecord: повторная сериализация байт в байт');
+$t->eq((string)$txtLong2, $long, 'TxtRecord: сращённый текст равен исходному');
+
+// TXT из нескольких строк
+$txtMulti = new TxtRecord(['a', 'b']);
+$txtMulti2 = TxtRecord::deserialize($txtMulti->serialize(), 0, strlen($txtMulti->serialize()));
+$t->eq($txtMulti2->texts, ['a', 'b'], 'TxtRecord: несколько строк roundtrip');
+
+$soa = new SoaRecord('ns1.example.com', 'admin.example.com', 2024010101, 7200, 900, 1209600, 3600);
+$soa2 = SoaRecord::deserialize($soa->serialize(), 0, strlen($soa->serialize()));
+$t->eq($soa2->serial, 2024010101, 'SoaRecord: roundtrip serial');
+$t->eq($soa2->minimum, 3600, 'SoaRecord: roundtrip minimum');
+
+$srv = new SrvRecord(1, 5, 5061, 'sip.example.com');
+$srv2 = SrvRecord::deserialize($srv->serialize(), 0, strlen($srv->serialize()));
+$t->eq([$srv2->priority, $srv2->weight, $srv2->port, $srv2->target], [1, 5, 5061, 'sip.example.com'], 'SrvRecord: roundtrip');
+
+$caa = new CaaRecord(0, 'issue', 'letsencrypt.org');
+$caa2 = CaaRecord::deserialize($caa->serialize(), 0, strlen($caa->serialize()));
+$t->eq($caa2->flags, 0, 'CaaRecord: roundtrip flags');
+$t->eq($caa2->tag, 'issue', 'CaaRecord: roundtrip tag');
+$t->eq($caa2->value, 'letsencrypt.org', 'CaaRecord: roundtrip value');
+
+$unk = new UnknownRdata("\xDE\xAD\xBE\xEF");
+$t->eq(UnknownRdata::deserialize($unk->serialize(), 0, 4)->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata: байты сохраняются как есть');
+
+/* ---------- Имена внутри RDATA с указателями ---------- */
+
+// MX, где exchange указывает на имя из QUESTION: CNAME-запись с указателем на смещение 12
+// буфер: [12 байт заголовка][question name "example.com"][...][CNAME rdata с указателем C00C]
+$msg = str_repeat("\0", 12)
+     . "\x07example\x03com\x00"     // имя в смещении 12
+     . "\x07target"                 // не важная часть
+     . "\xC0\x0C"                   // CNAME rdata: указатель на "example.com"
+;
+[$cname] = CnameRecord::deserialize($msg, 0 + strlen($msg) - 2, 2);
+$t->eq($cname->target, 'example.com', 'RdataName: указатель из RDATA в вопрос разрешается');
+
+/* ---------- OPT / EDNS ---------- */
+
+// OPT: класс несёт UDP-размер, TTL - extRcode/version/DO
+$buf = "\0" . pack('nnNn', 41, 1232, 1 << 15, 0);
+[$optRec] = DnsRecord::deserialize($buf, 0);
+$t->eq($optRec->rdata instanceof OptRecord, true, 'OptRecord: тип распознан реестром');
+$t->eq($optRec->rdata->udpSize, 1232, 'OptRecord: udpSize из поля class');
+$t->eq($optRec->rdata->do, true, 'OptRecord: флаг DO из TTL');
+
+// Расширенный rcode: extRcode=1 (BADVERS), header rcode=0 -> итог 16
+$m = new DnsMessage(new DnsHeader(id: 1));
+$m->additional[] = new DnsRecord('', 41, 4096, 0, new OptRecord(4096, 1, 0, false));
+$t->eq($m->rcode(), 16, 'DnsMessage::rcode(): расширение через EDNS');
+
+/* ---------- DnsMessage: круговое преобразование ---------- */
+
+// Запрос: serialize -> deserialize -> serialize, байты совпадают
+$q = DnsMessage::query('www.example.com', 1);
+$wire1 = $q->serialize();
+$q2 = DnsMessage::deserialize($wire1);
+$t->eq($q2->serialize(), $wire1, 'DnsMessage: запрос roundtrip байт в байт');
+$t->eq($q2->header->qdCount, 1, 'DnsMessage: qdCount=1');
+$t->eq($q2->header->arCount, 1, 'DnsMessage: arCount=1 (EDNS)');
+$t->eq($q2->questions[0]->name, 'www.example.com', 'DnsMessage: имя вопроса сохранено');
+
+// Ответ: собираем вручную и гоняем туда-обратно
+$resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true));
+$resp->questions[] = new DnsQuestion('example.com', 1);
+$resp->answers[] = new DnsRecord('example.com', 1, 1, 300, new ARecord('93.184.216.34'));
+$resp->answers[] = new DnsRecord('example.com', 5, 1, 300, new CnameRecord('cname.example.com'));
+$resp->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord(['hello', 'world']));
+$rw = $resp->serialize();
+$resp2 = DnsMessage::deserialize($rw);
+$t->eq($resp2->serialize(), $rw, 'DnsMessage: ответ roundtrip байт в байт');
+$t->eq($resp2->header->anCount, 3, 'DnsMessage: anCount=3');
+$t->eq($resp2->answers[0]->rdata->ip, '93.184.216.34', 'DnsMessage: A-ответ');
+$t->eq($resp2->answers[1]->rdata->target, 'cname.example.com', 'DnsMessage: CNAME-ответ');
+$t->eq($resp2->answers[2]->rdata->texts, ['hello', 'world'], 'DnsMessage: TXT-ответ');
+
+// Известный вектор: полный запрос www.example.com/A с EDNS
+$known = DnsMessage::query('www.example.com', 1);
+$known->header->id = 0x1234;
+$expected = '12 34 01 00 00 01 00 00 00 00 00 01'
+          . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+          . ' 00 00 29 10 00 00 00 00 00 00';
+$t->eq(hexs($known->serialize()), $expected, 'DnsMessage: известный вектор запроса');
+
+// Известный вектор: ответ с сжатым именем в ANSWER
+// header id=0x1234 flags=0x8180 (QR|RD|RA), qd=1 an=1;
+// question: www.example.com A IN; answer: pointer C00C, A IN ttl=10, rdata 192.168.1.1
+$respHex = '12 34 81 80 00 01 00 01 00 00 00 00'
+         . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+         . ' C0 0C 00 01 00 01 00 00 00 0A 00 04 C0 A8 01 01';
+$parsed = DnsMessage::deserialize(hex2bin(str_replace(' ', '', $respHex)));
+$t->eq($parsed->header->qr, true, 'Вектор ответа: qr=true');
+$t->eq($parsed->answers[0]->name, 'www.example.com', 'Вектор ответа: имя через указатель');
+$t->eq($parsed->answers[0]->rdata->ip, '192.168.1.1', 'Вектор ответа: rdata A-записи');
+$t->eq($parsed->answers[0]->ttl, 10, 'Вектор ответа: ttl=10');
+
+/* ---------- Реестр типов ---------- */
+
+$t->eq(RdataRegistry::classFor(1), ARecord::class, 'RdataRegistry: A -> ARecord');
+$t->eq(RdataRegistry::classFor(28), AaaaRecord::class, 'RdataRegistry: AAAA -> AaaaRecord');
+$t->eq(RdataRegistry::classFor(257), CaaRecord::class, 'RdataRegistry: CAA -> CaaRecord');
+$t->eq(RdataRegistry::classFor(999), UnknownRdata::class, 'RdataRegistry: неизвестный -> UnknownRdata');
+
+/* ---------- Обрезанные данные ---------- */
+
+$t->throws(fn() => DnsMessage::deserialize(substr($wire1, 0, 5)), 'DnsMessage: обрезанный запрос -> исключение');
+
+$trunc = substr($resp->serialize(), 0, strlen($rw) - 2); // откусили байт rdata
+$t->throws(fn() => DnsMessage::deserialize($trunc), 'DnsMessage: обрезанный ответ -> исключение');
+
+$t->summary();
+```
+
+Пара слов о том, что здесь проверяется и почему именно так:
+
+- **Известные векторы.** Два самых важных теста - это <золотые> байтовые последовательности: полный запрос `www.example.com/A` с EDNS и ответ с compression pointer в ANSWER. Если что-то в битовой раскладке флагов или порядке полей сломается, эти тесты упадут первыми, до всякого roundtrip.
+- **Roundtrip <байт в байт>.** Сериализация  десериализация  повторная сериализация должна давать те же байты. Это ловит не только ошибки разбора, но и асимметрии: например, TXT длиннее 255 символов при сериализации режется на куски, а после десериализации строки склеиваются - тест проверяет, что байты восходят к тем же, а текст совпадает с исходным.
+- **Указатели.** Три сценария: нормальный указатель в начало буфера, зацикленный (защита должна сработать по лимиту переходов) и обрезанный. Плюс случай, когда имя внутри RDATA ссылается на имя из QUESTION - он часто всплывает в реальных ответах с CNAME/MX.
+- **OPT.** Отдельная группа для нестандартной раскладки EDNS: UDP-размер в поле class, флаг DO и старшие биты rcode в TTL, расширенный rcode считается как `16` для BADVERS.
+- **Обрезанные входы.** Обрезка буфера на 5 байт и минус один байт из rdata - оба случая обязаны бросать исключение, а не читать мусор.
+
+Запускается так:
+
+```
+php doh_tests.php
+```
+
+и в конце печатает счётчик; при падении хотя бы одного теста код возврата ненулевой - тесты легко встроить в CI без обвязки.
+
+Одно ограничение честно отмечу: транспорт `DohTransport` здесь не тестируется - для него нужны либо мок HTTP-обёртки, либо живой запрос к серверу. Если хотите, могу добавить третий вариант: интеграционный тест с реальным DoH-эндпоинтом, который проверяет, что наш клиент и Google/Cloudflare действительно понимают друг друга.

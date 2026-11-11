@@ -1,0 +1,349 @@
+Напиши мне на ПХП программу -- клиент для получения бинарных DOH запросов с парсингом без сторонних библиотек?
+
+Вот самодостаточный клиент на чистом PHP: сам собирает DNS-запрос в wire-формате (RFC 1035), отправляет его по DoH методом POST (тип содержимого `application/dns-message`), сам разбирает бинарный ответ, включая сжатие имён (compression pointers) и основные типы записей.
+
+```php
+<?php
+declare(strict_types=1);
+
+/**
+ * Мини-клиент DNS over HTTPS (RFC 8484) на чистом PHP.
+ * Собирает DNS-сообщение, отправляет его на DoH-сервер методом POST
+ * и разбирает бинарный ответ без сторонних библиотек.
+ */
+class DohClient
+{
+    private const ENDPOINT = 'https://dns.google/dns-query'; // или https://cloudflare-dns.com/dns-query
+
+    private const TYPES = [
+        1 => 'A', 2 => 'NS', 5 => 'CNAME', 6 => 'SOA', 12 => 'PTR',
+        15 => 'MX', 16 => 'TXT', 28 => 'AAAA', 33 => 'SRV',
+        65 => 'HTTPS', 257 => 'CAA',
+    ];
+
+    private const CLASSES = [1 => 'IN', 3 => 'CH', 4 => 'HS', 255 => 'ANY'];
+
+    private const RCODES = [
+        0 => 'NOERROR', 1 => 'FORMERR', 2 => 'SERVFAIL', 3 => 'NXDOMAIN',
+        4 => 'NOTIMP', 5 => 'REFUSED',
+    ];
+
+    /** ID последнего запроса - для проверки соответствия ответа */
+    private int $lastId = 0;
+
+    /**
+     * Основной метод: запрос -> разобранный ответ.
+     * @return array{header: array, questions: array, answers: array, authority: array, additional: array}
+     */
+    public function query(string $domain, int $type = 1, bool $wantDnssec = false): array
+    {
+        $wire = $this->buildQuery($domain, $type, $wantDnssec);
+        $response = $this->send($wire);
+        return $this->parseResponse($response);
+    }
+
+    /* ---------- Сборка запроса ---------- */
+
+    private function buildQuery(string $domain, int $type, bool $wantDnssec): string
+    {
+        $this->lastId = random_int(0, 65535);
+
+        $header  = pack('n', $this->lastId);   // ID
+        $header .= pack('n', 0x0100 | ($wantDnssec ? 0x8000 : 0)); // FLAGS: RD=1, +DO для DNSSEC
+        $header .= pack('nnnn', 1, 0, 0, 0);   // QDCOUNT=1, остальное 0
+
+        $question = $this->encodeName($domain);
+        $question .= pack('nn', $type, 1);     // TYPE, CLASS=IN
+
+        // EDNS0 OPT (4096 байт буфер) - опционально, но полезно
+        // NAME=0, TYPE=OPT(41), CLASS=payload, TTL=0, RDLENGTH=0
+        $edns = pack('nnNn', 0, 41, 4096, 0);
+
+        return $header . $question . $edns;
+    }
+
+    private function encodeName(string $name): string
+    {
+        $out = '';
+        foreach (explode('.', rtrim($name, '.')) as $label) {
+            $len = strlen($label);
+            if ($len === 0 || $len > 63) {
+                throw new InvalidArgumentException("Некорректная метка в имени: '$label'");
+            }
+            $out .= chr($len) . $label;
+        }
+        return $out . "\0";
+    }
+
+    /* ---------- Отправка ---------- */
+
+    private function send(string $wire): string
+    {
+        $context = stream_context_create([
+            'http' => [
+                'method'  => 'POST',
+                'header'  => "Content-Type: application/dns-message\r\nAccept: application/dns-message\r\n",
+                'content' => $wire,
+                'timeout' => 5,
+                'ignore_errors' => true,
+            ],
+            'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
+        ]);
+
+        $response = @file_get_contents(self::ENDPOINT, false, $context);
+        if ($response === false) {
+            throw new RuntimeException('Не удалось соединиться с DoH-сервером: ' . (error_get_last()['message'] ?? '?'));
+        }
+
+        // Проверяем HTTP-статус
+        if (!preg_match('/^HTTP\/\S+\s+(2\d\d)/', $http_response_header[0] ?? '')) {
+            throw new RuntimeException('DoH-сервер вернул ошибку: ' . ($http_response_header[0] ?? 'нет заголовков'));
+        }
+
+        return $response;
+    }
+
+    /* ---------- Разбор ответа ---------- */
+
+    private function parseResponse(string $buf): array
+    {
+        if (strlen($buf) < 12) {
+            throw new RuntimeException('Ответ короче DNS-заголовка');
+        }
+
+        $id = (unpack('n', substr($buf, 0, 2)))[1];
+        if ($id !== $this->lastId) {
+            throw new RuntimeException("ID ответа ($id) не совпадает с ID запроса ({$this->lastId})");
+        }
+
+        $flags    = (unpack('n', substr($buf, 2, 2)))[1];
+        $qd       = (unpack('n', substr($buf, 4, 2)))[1];
+        $an       = (unpack('n', substr($buf, 6, 2)))[1];
+        $ns       = (unpack('n', substr($buf, 8, 2)))[1];
+        $ar       = (unpack('n', substr($buf, 10, 2)))[1];
+
+        $header = [
+            'qr'         => ($flags >> 15) & 1,
+            'opcode'     => ($flags >> 11) & 0xF,
+            'aa'         => ($flags >> 10) & 1,
+            'tc'         => ($flags >> 9) & 1,
+            'rd'         => ($flags >> 8) & 1,
+            'ra'         => ($flags >> 7) & 1,
+            'rcode'      => $flags & 0xF,
+            'rcode_name' => self::RCODES[$flags & 0xF] ?? 'UNKNOWN',
+        ];
+
+        $off = 12;
+        $result = [
+            'header'     => $header,
+            'questions'  => [],
+            'answers'    => [],
+            'authority'  => [],
+            'additional' => [],
+        ];
+
+        // Вопросы
+        for ($i = 0; $i < $qd; $i++) {
+            [$name, $off] = $this->decodeName($buf, $off);
+            $type  = (unpack('n', substr($buf, $off, 2)))[1]; $off += 2;
+            $class = (unpack('n', substr($buf, $off, 2)))[1]; $off += 2;
+            $result['questions'][] = [
+                'name'  => $name,
+                'type'  => $type,
+                'tname' => self::TYPES[$type] ?? "TYPE$type",
+                'class' => self::CLASSES[$class] ?? "CLASS$class",
+            ];
+        }
+
+        // Секции ответов
+        foreach (['answers', 'authority', 'additional'] as $section) {
+            $count = match ($section) {
+                'answers'    => $an,
+                'authority'  => $ns,
+                'additional' => $ar,
+            };
+            for ($i = 0; $i < $count; $i++) {
+                [$record, $off] = $this->parseRecord($buf, $off);
+                $result[$section][] = $record;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Декодирование имени с поддержкой compression pointers (RFC 1035, 4.1.4).
+     * @return array{0: string, 1: int} [имя, новое смещение]
+     */
+    private function decodeName(string $buf, int $off): array
+    {
+        $labels = [];
+        $endOff = null;         // смещение после имени в оригинальном потоке
+        $jumps  = 0;
+
+        while (true) {
+            if ($off >= strlen($buf)) {
+                throw new RuntimeException('Имя выходит за границы сообщения');
+            }
+            $len = ord($buf[$off]);
+
+            if ($len === 0) {                 // конец имени
+                $off++;
+                break;
+            }
+
+            if (($len & 0xC0) === 0xC0) {     // указатель: 2 старших бита = 11
+                if ($endOff === null) {
+                    $endOff = $off + 2;
+                }
+                if (++$jumps > 128) {
+                    throw new RuntimeException('Слишком много compression pointers - возможна зацикленность');
+                }
+                $ptr = (($len & 0x3F) << 8) | ord($buf[$off + 1]);
+                if ($ptr >= $off) {
+                    throw new RuntimeException('Указатель указывает вперёд - некорректное сообщение');
+                }
+                $off = $ptr;
+                continue;
+            }
+
+            if (($len & 0xC0) !== 0 || $len > 63) {
+                throw new RuntimeException("Некорректная длина метки: $len");
+            }
+
+            $labels[] = substr($buf, $off + 1, $len);
+            $off += 1 + $len;
+        }
+
+        return [($labels ? implode('.', $labels) : '.') . '', $endOff ?? $off];
+    }
+
+    /** Разбор одной ресурсной записи */
+    private function parseRecord(string $buf, int $off): array
+    {
+        [$name, $off] = $this->decodeName($buf, $off);
+
+        $type  = (unpack('n', substr($buf, $off, 2)))[1];     $off += 2;
+        $class = (unpack('n', substr($buf, $off, 2)))[1];     $off += 2;
+        $ttl   = (unpack('N', substr($buf, $off, 4)))[1];     $off += 4;
+        $rdLen = (unpack('n', substr($buf, $off, 2)))[1];     $off += 2;
+        $rdata = substr($buf, $off, $rdLen);
+        $off  += $rdLen;
+
+        $record = [
+            'name'  => $name,
+            'type'  => $type,
+            'tname' => self::TYPES[$type] ?? "TYPE$type",
+            'class' => self::CLASSES[$class] ?? "CLASS$class",
+            'ttl'   => $ttl,
+            'rdata' => '',
+        ];
+
+        // Расшифровка RDATA для известных типов
+        switch ($type) {
+            case 1:  // A
+                if ($rdLen === 4) {
+                    $record['rdata'] = implode('.', unpack('C4', $rdata));
+                }
+                break;
+
+            case 28: // AAAA
+                if ($rdLen === 16) {
+                    $record['rdata'] = @inet_ntop($rdata) ?: bin2hex($rdata);
+                }
+                break;
+
+            case 2:  case 5:  case 12:  // NS, CNAME, PTR
+                [$ptr, ] = $this->decodeName($buf, $off - $rdLen);
+                $record['rdata'] = $ptr;
+                break;
+
+            case 6:  // SOA
+                [$mname, $o] = $this->decodeName($buf, $off - $rdLen);
+                [$rname, $o] = $this->decodeName($buf, $o);
+                $nums = unpack('N5', substr($buf, $o, 20));
+                $record['rdata'] = sprintf('%s %s serial=%u refresh=%u retry=%u expire=%u min=%u',
+                    $mname, $rname, ...array_values($nums));
+                break;
+
+            case 15: // MX
+                if ($rdLen >= 3) {
+                    $pref = (unpack('n', substr($rdata, 0, 2)))[1];
+                    [$exch, ] = $this->decodeName($buf, $off - $rdLen + 2);
+                    $record['rdata'] = "$pref $exch";
+                }
+                break;
+
+            case 16: // TXT
+                $texts = [];
+                $p = 0;
+                while ($p < $rdLen) {
+                    $l = ord($rdata[$p]);
+                    $texts[] = substr($rdata, $p + 1, $l);
+                    $p += 1 + $l;
+                }
+                $record['rdata'] = implode('', $texts);
+                break;
+
+            case 33: // SRV
+                if ($rdLen >= 7) {
+                    $nums = unpack('nnn', substr($rdata, 0, 6));
+                    [$target, ] = $this->decodeName($buf, $off - $rdLen + 6);
+                    $record['rdata'] = sprintf('%u %u %u %s', $nums[1], $nums[2], $nums[3], $target);
+                }
+                break;
+
+            case 41: // OPT (EDNS) - не выводим как обычную запись
+                $record['tname'] = 'OPT';
+                $record['rdata'] = '[EDNS0]';
+                break;
+
+            default:
+                $record['rdata'] = bin2hex($rdata) ?: '';
+        }
+
+        return [$record, $off];
+    }
+}
+
+/* ---------- Пример использования ---------- */
+
+$client = new DohClient();
+
+try {
+    // A-запись
+    $r = $client->query('yandex.ru', 1);
+    printf("HTTP: %s | RCODE: %s | записей: %d\n",
+        $r['header']['aa'] ? 'AA' : 'no-AA', $r['header']['rcode_name'], count($r['answers']));
+    foreach ($r['answers'] as $a) {
+        printf("  %-8s %-32s TTL=%-6d %s\n", $a['tname'], $a['name'], $a['ttl'], $a['rdata']);
+    }
+
+    // MX-запись
+    echo "\n";
+    $r = $client->query('gmail.com', 15);
+    foreach ($r['answers'] as $a) {
+        printf("  %-8s %-32s TTL=%-6d %s\n", $a['tname'], $a['name'], $a['ttl'], $a['rdata']);
+    }
+
+    // AAAA-запись
+    echo "\n";
+    $r = $client->query('cloudflare.com', 28);
+    foreach ($r['answers'] as $a) {
+        printf("  %-8s %-32s TTL=%-6d %s\n", $a['tname'], $a['name'], $a['ttl'], $a['rdata']);
+    }
+} catch (Throwable $e) {
+    fwrite(STDERR, 'Ошибка: ' . $e->getMessage() . PHP_EOL);
+    exit(1);
+}
+```
+
+Что здесь важно знать:
+
+- **Протокол.** DoH по RFC 8484 - это тот же DNS wire-формат, но внутри HTTPS. Запрос POST с `Content-Type: application/dns-message`, ответ - бинарное DNS-сообщение. Конечная точка всегда `/dns-query`, менять её не нужно - меняется только хост.
+- **Сборка запроса.** Заголовок 12 байт, вопрос, плюс EDNS0 OPT для буфера 4096 байт. ID генерируется через `random_int` и сверяется в ответе - защита от подмены.
+- **Разбор имён.** Самая хитрая часть - compression pointers: имя в ответе может указывать на своё начало где-то раньше в буфере. В коде это учтено: указатели следуются с лимитом в 128 переходов и проверкой <вперёд указывать нельзя> - защита от зацикливания.
+- **Типы записей.** Полностью разобраны A, AAAA, CNAME, NS, PTR, MX, TXT, SOA, SRV. Остальные (HTTPS, CAA, DNSKEY и т.д.) возвращаются hex-ом RDATA - при желании легко добавить кейс в `switch`.
+- **Fallback на GET.** Если POST по каким-то причинам недоступен, DoH поддерживает и GET: `?dns=<base64url-запрос>` - тот же wire-формат в base64url без `=`.
+
+Если хочется вынести transport из класса или добавить TCP/UDP-DNS рядом для сравнения, могу расширить - скажите.

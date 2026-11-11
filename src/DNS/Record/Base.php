@@ -1,0 +1,30 @@
+<?
+/* ============================================================
+ * RDATA: базовый класс и конкретные типы записей
+ * ============================================================ */
+
+abstract class DnsRdata
+{
+  /** Бинарное представление RDATA (имена - без сжатия) */
+  abstract public function serialize(): string;
+
+  /**
+   * Разбор RDATA. $off - абсолютное смещение начала RDATA в сообщении
+   * (нужно целиком сообщение, т.к. имена внутри RDATA могут быть сжаты указателями).
+   */
+  abstract public static function deserialize(string $msg, int $off, int $rdLen): static;
+
+  abstract public function __toString(): string;
+
+  static function test(TestRunner $t)
+  {
+    ARecord      ::test($t);
+    AaaaRecord   ::test($t);
+    MxRecord     ::test($t);
+    TxtRecord    ::test($t);
+    SoaRecord    ::test($t);
+    SrvRecord    ::test($t);
+    CaaRecord    ::test($t);
+    UnknownRdata ::test($t);
+  }
+}

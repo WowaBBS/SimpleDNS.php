@@ -1,0 +1,30 @@
+<?
+include_once '../_Cli.php' ;
+include_once '_All.php';
+
+/* ============================================================
+ * Пример использования
+ * ============================================================ */
+ 
+$list = [
+  ['yandex.ru'      ,  1],
+  ['gmail.com'      , 15],
+  ['cloudflare.com' , 28],
+];
+
+foreach ($list as [$domain, $type])
+{
+  echo "--- $domain (" . DnsMessage::typeName($type) . ") ---\n";
+  $reply = DohTransport::exchange(DnsMessage::query($domain, $type));
+  echo 'rcode: ', DnsHeader::rcodeName($reply->rcode()), "\n";
+  foreach ($reply->answers as $r)
+    echo '  ', $r, "\n";
+  
+  echo "\n";
+}
+
+// Ручная сборка тоже работает:
+$custom = new DnsMessage(new DnsHeader(id: 1234, rd: true));
+$custom->questions[] = new DnsQuestion('_dmarc.yandex.ru', 16);
+foreach (DohTransport::exchange($custom)->answers as $r)
+  echo $r, "\n";

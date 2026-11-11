@@ -1,0 +1,18 @@
+<?php
+declare(strict_types=1);
+
+include_once '../_Cli.php' ;
+include_once '_All.php';
+include_once 'Test.php';
+
+$t = new TestRunner();
+
+NameCodec     ::test($t); // NameCodec
+DnsHeader     ::test($t); // DnsHeader
+DnsRdata      ::test($t); // RDATA: известные векторы
+NamedRdata    ::test($t); // Имена внутри RDATA с указателями
+OptRecord     ::test($t); // OPT / EDNS
+DnsMessage    ::test($t); // DnsMessage: круговое преобразование
+RdataRegistry ::test($t); // Реестр типов
+
+$t->summary();
