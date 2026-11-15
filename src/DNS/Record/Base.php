@@ -9,12 +9,6 @@ abstract class DnsRdata
   abstract public function serialize(): string;
 
   /**
-   * Разбор RDATA. $off - абсолютное смещение начала RDATA в сообщении
-   * (нужно целиком сообщение, т.к. имена внутри RDATA могут быть сжаты указателями).
-   */
-  abstract public static function deserialize(string $msg, int $off, int $rdLen): static;
-
-  /**
    * Дописывает RDATA в &$buf. Базовая реализация - без имён,
    * просто переносит результат serialize().
    */
@@ -22,6 +16,12 @@ abstract class DnsRdata
   {
     $buf .= $this->serialize();
   }
+
+  /**
+   * Разбор RDATA. $off - абсолютное смещение начала RDATA в сообщении
+   * (нужно целиком сообщение, т.к. имена внутри RDATA могут быть сжаты указателями).
+   */
+  abstract public static function deserialize(string $msg, int $off, int $rdLen): static;
 
   abstract public function __toString(): string;
 

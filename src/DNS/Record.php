@@ -16,7 +16,7 @@ final class DnsRecord
   /** Фабрика OPT-записи для EDNS0 */
   public static function opt(int $udpSize = 4096, bool $dnssec = false): self
   {
-    return new self('', 41, $udpSize, 0, new OptRecord($udpSize, 0, $dnssec));
+    return new self('', 41, $udpSize, 0, new OptRecord($udpSize, do: $dnssec));
   }
 
   public function serialize(): string
@@ -36,10 +36,36 @@ final class DnsRecord
     }
     
     return NameCodec::encode($this->name)
-      . pack('nnNn', $this->type, $class, $ttl, strlen($rdata))
-      . $rdata;
+      .pack('nnNn', $this->type, $class, $ttl, strlen($rdata))
+      .$rdata;
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->name, $table, $buf);
+
+    // у OPT класс-поле несёт UDP-размер, TTL - extRcode/version/DO
+    if ($this->rdata instanceof OptRecord)
+    {
+      $class = $this->rdata->udpSize;
+      $ttl   = ( $this->rdata->extRcode << 24)
+             | (($this->rdata->version & 0xFF) << 16)
+             | ( $this->rdata->do ? 1 << 15 : 0);
+    }
+    else
+    {
+      $class = $this->class ;
+      $ttl   = $this->ttl   ;
+    }
+
+    $lenPos = strlen($buf) + 8;         // где будет RDLENGTH
+    $buf .= pack('nnN', $this->type, $class, $ttl) . "\0\0";
+
+    $this->rdata?->serializeWith($table, $buf); // RDATA - сразу в общий буфер
+
+    $buf = substr_replace($buf, pack('n', strlen($buf) - $lenPos - 2), $lenPos, 2);
+  }
+  
   /** @return array{0:self, 1:int} */
   public static function deserialize(string $msg, int $off): array
   {
@@ -63,28 +89,6 @@ final class DnsRecord
     return [$record, $off + $rdLen];
   }
 
-  public function serializeWith(NameTable $table, string &$buf): void
-  {
-    NameCodec::encodeWith($this->name, $table, $buf);
-
-    // у OPT класс-поле несёт UDP-размер, TTL - extRcode/version/DO
-    if ($this->rdata instanceof OptRecord) {
-      $class = $this->rdata->udpSize;
-      $ttl   = ( $this->rdata->extRcode << 24)
-             | (($this->rdata->version & 0xFF) << 16)
-             | ( $this->rdata->do ? 1 << 15 : 0);
-    } else {
-      [$class, $ttl] = [$this->class, $this->ttl];
-    }
-
-    $lenPos = strlen($buf) + 8;         // где будет RDLENGTH
-    $buf .= pack('nnN', $this->type, $class, $ttl) . "\0\0";
-
-    $this->rdata?->serializeWith($table, $buf); // RDATA - сразу в общий буфер
-
-    $buf = substr_replace($buf, pack('n', strlen($buf) - $lenPos - 2), $lenPos, 2);
-  }
-  
   public function __toString(): string
   {
     return sprintf('%-6s %-32s TTL=%-6d %s',

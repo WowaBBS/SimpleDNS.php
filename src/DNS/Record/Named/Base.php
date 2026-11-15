@@ -9,17 +9,17 @@ abstract class NamedRdata extends DnsRdata
     return NameCodec::encode($this->target);
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->target, $table, $buf);
+  }
+  
   public static function deserialize(string $msg, int $off, int $rdLen): static
   {
     [$name] = NameCodec::decode($msg, $off);
     return new static($name);
   }
 
-  public function serializeWith(NameTable $table, string &$buf): void
-  {
-    NameCodec::encodeWith($this->target, $table, $buf);
-  }
-  
   public function __toString(): string { return $this->target; }
 
   static function test(TestRunner $t)

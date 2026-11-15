@@ -21,9 +21,9 @@ final class NameTable
 
   public function register(string $name, int $offset): void
   {
-    if ($name === '' || $offset >= 0x4000) {
+    if ($name === '' || $offset >= 0x4000)
       return; // корень и смещения вне досягаемости указателей не сохраняем
-    }
+    
     $key = strtolower($name);   // сравнение имён регистронезависимо (RFC 4343)
     $this->map[$key] ??= $offset;
   }

@@ -12,8 +12,8 @@ final class DnsHeader
 
   public function __construct(
     public int  $id  =     0,
-    public bool $qr  = false, //Xxxx xxxx ответ (0 = запрос)
-    public int  $opcode  = 0, //xXXX Xxxx
+    public bool $qr  = false, //Xxxx xxxx 1 - answer, 0 - query
+    public int  $opcode  = 0, //xXXX Xxxx 0 - query, 1 - inversed query, 2 - status, 3-15 - reserved.
     public bool $aa  = false, //xxxx xXxx данное поле имеет смысл только в DNS-ответах от сервера и сообщает о том, является ли ответ авторитетным либо нет. 
     public bool $tc  = false, //xxxx xxXx данный флаг устанавливается в пакете ответе в том случае если сервер не смог поместить всю необходимую информацию в пакет из-за существующих ограничений.
     public bool $rd  = false, //xxxx xxxX этот однобитовый флаг устанавливается в запросе и копируется в ответ. Если он флаг устанавливается в запросе — это значит, что клиент просит сервер не сообщать ему промежуточных ответов, а вернуть только IP-адрес.
@@ -77,11 +77,11 @@ final class DnsHeader
   
   static function test(TestRunner $t)
   {
-    $h = new DnsHeader(id: 0x1234, qr: true, rd: true, rcode: 3);
-    $t->eq(hexs($h->serialize()), '12 34 81 03 00 00 00 00 00 00 00 00', 'DnsHeader: точные байты (QR|RD, rcode=3)');
+    $h = new DnsHeader(id: 0x1235, qr: true, rd: true, rcode: 3);
+    $t->eq(hexs($h->serialize()), '12 35 81 03 00 00 00 00 00 00 00 00', 'DnsHeader: точные байты (QR|RD, rcode=3)');
     
     $h2 = DnsHeader::deserialize($h->serialize());
-    $t->eq($h2->id    , 0x1234 , 'DnsHeader: roundtrip id');
+    $t->eq($h2->id    , 0x1235 , 'DnsHeader: roundtrip id');
     $t->eq($h2->qr    , true   , 'DnsHeader: roundtrip qr');
     $t->eq($h2->rd    , true   , 'DnsHeader: roundtrip rd');
     $t->eq($h2->rcode ,      3 , 'DnsHeader: roundtrip rcode');
@@ -90,7 +90,7 @@ final class DnsHeader
     $t->eq(DnsHeader::rcodeName(0), 'NOERROR', 'DnsHeader: rcodeName(0)');
     $t->eq(DnsHeader::rcodeName(3), 'NXDOMAIN', 'DnsHeader: rcodeName(3)');
     
-    $t->throws(fn() => DnsHeader::deserialize('1234'), 'DnsHeader: буфер < 12 байт -> исключение');
+    $t->throws(fn() => DnsHeader::deserialize('1235'), 'DnsHeader: буфер < 12 байт -> исключение');
   }
 
 //****************************************************************

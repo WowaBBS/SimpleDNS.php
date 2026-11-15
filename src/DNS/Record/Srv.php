@@ -14,6 +14,12 @@ final class SrvRecord extends DnsRdata
     return pack('nnn', $this->priority, $this->weight, $this->port) . NameCodec::encode($this->target);
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    $buf .= pack('nnn', $this->priority, $this->weight, $this->port);
+    NameCodec::encodeWith($this->target, $table, $buf);
+  }
+  
   public static function deserialize(string $msg, int $off, int $rdLen): static
   {
     if ($rdLen < 7)
@@ -25,12 +31,6 @@ final class SrvRecord extends DnsRdata
     return new static($p, $w, $pt, $target);
   }
 
-  public function serializeWith(NameTable $table, string &$buf): void
-  {
-    $buf .= pack('nnn', $this->priority, $this->weight, $this->port);
-    NameCodec::encodeWith($this->target, $table, $buf);
-  }
-  
   public function __toString(): string
   {
     return "{$this->priority} {$this->weight} {$this->port} {$this->target}";

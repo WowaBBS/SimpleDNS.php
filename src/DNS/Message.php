@@ -57,14 +57,13 @@ final class DnsMessage
     $this->header->arCount = count($this->additional );
 
     $buf = $this->header->serialize();
-    foreach ($this->questions as $q) {
+    foreach ($this->questions as $q)
       $q->serializeWith($table, $buf);
-    }
-    foreach ([$this->answers, $this->authority, $this->additional] as $section) {
-      foreach ($section as $record) {
+    
+    foreach ([$this->answers, $this->authority, $this->additional] as $section)
+      foreach ($section as $record)
         $record->serializeWith($table, $buf);
-      }
-    }
+    
     return $buf;
   }
   
@@ -120,9 +119,9 @@ final class DnsMessage
     // Ответ: собираем вручную и гоняем туда-обратно
     $resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true));
     $resp->questions[] = new DnsQuestion('example.com', 1);
-    $resp->answers[] = new DnsRecord('example.com', 1, 1, 300, new ARecord('93.184.216.34'));
-    $resp->answers[] = new DnsRecord('example.com', 5, 1, 300, new CnameRecord('cname.example.com'));
-    $resp->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord(['hello', 'world']));
+    $resp->answers  [] = new DnsRecord  ('example.com', 1, 1, 300, new ARecord('93.184.216.34'));
+    $resp->answers  [] = new DnsRecord  ('example.com', 5, 1, 300, new CnameRecord('cname.example.com'));
+    $resp->answers  [] = new DnsRecord  ('example.com', 16, 1, 60, new TxtRecord(['hello', 'world']));
     $rw = $resp->serialize();
     $resp2 = DnsMessage::deserialize($rw);
     $t->eq($resp2->serialize(), $rw, 'DnsMessage: ответ roundtrip байт в байт');

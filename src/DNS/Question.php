@@ -16,18 +16,18 @@ final class DnsQuestion
     return NameCodec::encode($this->name) . pack('nn', $this->type, $this->class);
   }
 
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    NameCodec::encodeWith($this->name, $table, $buf);
+    $buf .= pack('nn', $this->type, $this->class);
+  }
+
   /** @return array{0:self, 1:int} */
   public static function deserialize(string $msg, int $off): array
   {
     [$name, $off] = NameCodec::decode($msg, $off);
     [$type, $class] = array_values(unpack('n2', $msg, $off));
     return [new self($name, $type, $class), $off + 4];
-  }
-
-  public function serializeWith(NameTable $table, string &$buf): void
-  {
-    NameCodec::encodeWith($this->name, $table, $buf);
-    $buf .= pack('nn', $this->type, $this->class);
   }
 
 //****************************************************************
