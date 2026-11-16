@@ -21,15 +21,15 @@ final class TxtRecord extends DnsRdata
     return $out;
   }
 
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
-    $texts = [];
-    $p = 0;
-    while ($p < $rdLen)
+    $texts  = [];
+    $consumed = 0;
+    while ($consumed < $rdLen) 
     {
-      $l = ord($msg[$off + $p]);
-      $texts[] = substr($msg, $off + $p + 1, $l);
-      $p += 1 + $l;
+      $l = $r->readU8();
+      $texts[] = $r->readBytes($l);   // выйдет за rdLen -> исключение из ридера
+      $consumed += 1 + $l;
     }
     return new static($texts);
   }

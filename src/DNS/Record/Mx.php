@@ -18,13 +18,13 @@ final class MxRecord extends DnsRdata
     NameCodec::encodeWith($this->exchange, $table, $buf);
   }
   
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
     if ($rdLen < 3)
       throw new RuntimeException("Некорректная длина MX-записи: $rdLen");
     
-    $pref = unpack('n', $msg, $off)[1];
-    [$exchange] = NameCodec::decode($msg, $off + 2);
+    $pref = $r->readU16();
+    $exchange = $r->readName();
     return new static($pref, $exchange);
   }
 

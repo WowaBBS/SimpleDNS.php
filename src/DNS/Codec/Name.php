@@ -25,47 +25,9 @@ final class NameCodec
   /** @return array{0:string, 1:int} [имя, смещение сразу после имени в буфере] */
   public static function decode(string $msg, int $off): array
   {
-    $labels = [];
-    $end = null;
-    $jumps = 0;
-    $max = strlen($msg);
-
-    while (true)
-    {
-      if ($off >= $max)
-        throw new RuntimeException('Имя выходит за границы сообщения');
-      
-      $len = ord($msg[$off]);
-
-      if ($len === 0)
-      { // конец имени
-        $off++;
-        break;
-      }
-
-      if (($len & 0xC0) === 0xC0)
-      { // compression pointer
-        if ($off + 1 >= $max)
-          throw new RuntimeException('Обрезанный compression pointer');
-        
-        if ($end === null)
-          $end = $off + 2;      // где кончилось бы имя без указателя
-        
-        if (++$jumps > 128)
-          throw new RuntimeException('Зацикливание compression pointers');
-        
-        $off = (($len & 0x3F) << 8) | ord($msg[$off + 1]);
-        continue;
-      }
-
-      if (($len & 0xC0) !== 0)
-        throw new RuntimeException("Некорректная длина метки: $len");
-
-      $labels[] = substr($msg, $off + 1, $len);
-      $off += 1 + $len;
-    }
-
-    return [implode('.', $labels), $end ?? $off];
+    $r = DnsReader::of($msg, $off);
+    $name = $r->readName();
+    return [$name, $r->tell()];
   }
   
   static function test(TestRunner $t)

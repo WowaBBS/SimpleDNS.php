@@ -1,0 +1,569 @@
+Нужно написать DnsReader, который бы выполнялся для десериализаии и контроллировал чтение и выдавал эсепшн, если данные прочитать нельзя, deserialize(string $buf) оставить. он должен создавать DnsReader для работы тестов.
+
+Идея правильная: сейчас проверка границ размазана по куче `substr` и `unpack`-ов, а с `DnsReader` весь контроль чтения живёт в одном месте. Делаю так: `DnsReader` - единственное место, которое трогает байты при разборе; все статические `deserialize(string $buf)` сохраняют сигнатуры (для обратной совместимости с уже написанными тестами) и внутри создают ридер, а рядом появляется `fromReader(DnsReader ...)` - его и можно дёргать напрямую в тестах.
+
+## Новый класс DnsReader
+
+Добавьте в `doh_client.php` (до всех остальных классов - они его используют):
+
+```php
+/* ============================================================
+ * DnsReader - контролируемое чтение бинарного DNS-сообщения.
+ * Единственная точка доступа к байтам при десериализации:
+ * любое чтение за границей буфера бросает исключение.
+ * ============================================================ */
+
+final class DnsReader
+{
+  public function __construct(
+    private string $buf,
+    private int  $off = 0,
+  ) {}
+
+  public static function of(string $buf, int $off = 0): self
+  {
+    return new self($buf, $off);
+  }
+
+  public function tell(): int    { return $this->off; }
+
+  public function remaining(): int { return strlen($this->buf) - $this->off; }
+
+  public function eof(): bool    { return $this->off >= strlen($this->buf); }
+
+  public function seek(int $off): void
+  {
+    if ($off < 0 || $off > strlen($this->buf)) {
+      throw new RuntimeException("Некорректная позиция чтения: $off");
+    }
+    $this->off = $off;
+  }
+
+  /** Проверка, что впереди есть $n байт, иначе - исключение */
+  public function ensure(int $n, string $what = 'данных'): void
+  {
+    if ($n < 0) {
+      throw new RuntimeException('Отрицательная длина чтения');
+    }
+    if ($this->off + $n > strlen($this->buf)) {
+      throw new RuntimeException(sprintf(
+        'Не хватает %s: нужно %d, в буфере осталось %d',
+        $what, $n, $this->remaining(),
+      ));
+    }
+  }
+
+  public function readBytes(int $n): string
+  {
+    $this->ensure($n);
+    $s = substr($this->buf, $this->off, $n);
+    $this->off += $n;
+    return $s;
+  }
+
+  public function readU8(): int
+  {
+    return ord($this->readBytes(1));
+  }
+
+  public function readU16(): int
+  {
+    return unpack('n', $this->readBytes(2))[1];
+  }
+
+  public function readU32(): int
+  {
+    return unpack('N', $this->readBytes(4))[1];
+  }
+
+  /**
+   * Чтение доменного имени с поддержкой compression pointers.
+   * После указателя позиция чтения встаёт сразу за ним (2 байта),
+   * само имя дочитывается по месту, на которое указатель ссылается.
+   */
+  public function readName(): string
+  {
+    $buf  = $this->buf;
+    $max  = strlen($buf);
+    $off  = $this->off;
+    $labels = [];
+    $end  = null;   // куда встать после имени в исходном потоке
+    $jumps  = 0;
+
+    while (true) {
+      if ($off >= $max) {
+        throw new RuntimeException('Имя выходит за границы сообщения');
+      }
+      $len = ord($buf[$off]);
+
+      if ($len === 0) {             // конец имени
+        $off++;
+        break;
+      }
+
+      if (($len & 0xC0) === 0xC0) {       // compression pointer
+        if ($off + 1 >= $max) {
+          throw new RuntimeException('Обрезанный compression pointer');
+        }
+        if ($end === null) {
+          $end = $off + 2;        // 2 байта тратит сам указатель
+        }
+        if (++$jumps > 128) {
+          throw new RuntimeException('Зацикливание compression pointers');
+        }
+        $ptr = (($len & 0x3F) << 8) | ord($buf[$off + 1]);
+        if ($ptr >= $off) {
+          throw new RuntimeException('Указатель указывает вперёд или на себя');
+        }
+        $off = $ptr;
+        continue;
+      }
+
+      if (($len & 0xC0) !== 0) {
+        throw new RuntimeException("Некорректная длина метки: $len");
+      }
+      if ($off + 1 + $len > $max) {
+        throw new RuntimeException('Метка выходит за границы сообщения');
+      }
+
+      $labels[] = substr($buf, $off + 1, $len);
+            $off += 1 + $len;
+    }
+
+    $this->off = $end ?? $off;
+    return implode('.', $labels);
+  }
+}
+```
+
+## Перевод существующих классов на DnsReader
+
+Логика везде та же, меняется только способ доступа к байтам - больше никаких `substr($msg, ...)` и ручных арифметик вида `$off - $rdLen` (с ридером они не нужны: он читает по всему сообщению, указатели разрешаются естественно).
+
+```php
+/* ---------- DnsRdata: контракт + совместимый враппер ---------- */
+
+abstract class DnsRdata
+{
+  abstract public function serialize(): string;
+
+  /** Чтение RDATA из ридера, стоящего на начале RDATA (ридер - над всем сообщением) */
+  abstract public static function fromReader(DnsReader $r, int $rdLen): static;
+
+  abstract public function __toString(): string;
+  abstract public function toJson(): string;
+  abstract public static function fromJson(string $data): static;
+
+  /** Старый интерфейс - сохранён для совместимости с существующими тестами */
+  public static function deserialize(string $msg, int $off, int $rdLen): static
+  {
+    $r = DnsReader::of($msg, $off);
+    $start = $r->tell();
+    $obj = static::fromReader($r, $rdLen);
+    if ($r->tell() - $start > $rdLen) {
+      throw new RuntimeException('RDATA прочитано больше, чем заявлено в RDLENGTH');
+    }
+    return $obj;
+  }
+
+  public function serializeWith(NameTable $table, string &$buf): void
+  {
+    $buf .= $this->serialize();
+  }
+}
+
+/* A */
+final class ARecord extends DnsRdata
+{
+  // serialize(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    if ($rdLen !== 4) {
+      throw new RuntimeException("Некорректная длина A-записи: $rdLen");
+    }
+    return new static(inet_ntop($r->readBytes(4)));
+  }
+}
+
+/* AAAA */
+final class AaaaRecord extends DnsRdata
+{
+  // serialize(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    if ($rdLen !== 16) {
+      throw new RuntimeException("Некорректная длина AAAA-записи: $rdLen");
+    }
+    return new static(inet_ntop($r->readBytes(16)));
+  }
+}
+
+/* NS / CNAME / PTR */
+abstract class NamedRdata extends DnsRdata
+{
+  // serialize(), serializeWith(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    return new static($r->readName());
+  }
+}
+
+/* MX */
+final class MxRecord extends DnsRdata
+{
+  // serialize(), serializeWith(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    if ($rdLen < 3) {
+      throw new RuntimeException("Некорректная длина MX-записи: $rdLen");
+    }
+    $pref = $r->readU16();
+    return new static($pref, $r->readName());
+  }
+}
+
+/* TXT */
+final class TxtRecord extends DnsRdata
+{
+  // serialize(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    $texts  = [];
+    $consumed = 0;
+    while ($consumed < $rdLen) {
+      $l = $r->readU8();
+      $texts[] = $r->readBytes($l);   // выйдет за rdLen -> исключение из ридера
+      $consumed += 1 + $l;
+    }
+    return new static($texts);
+  }
+}
+
+/* SOA */
+final class SoaRecord extends DnsRdata
+{
+  // serialize(), serializeWith(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    $mname = $r->readName();
+    $rname = $r->readName();
+    return new static($mname, $rname,
+      $r->readU32(), $r->readU32(), $r->readU32(), $r->readU32(), $r->readU32());
+  }
+}
+
+/* SRV */
+final class SrvRecord extends DnsRdata
+{
+  // serialize(), serializeWith(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    if ($rdLen < 7) {
+      throw new RuntimeException("Некорректная длина SRV-записи: $rdLen");
+    }
+    [$p, $w, $pt] = [$r->readU16(), $r->readU16(), $r->readU16()];
+    return new static($p, $w, $pt, $r->readName());
+  }
+}
+
+/* CAA */
+final class CaaRecord extends DnsRdata
+{
+  // serialize(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    if ($rdLen < 2) {
+      throw new RuntimeException("Некорректная длина CAA-записи: $rdLen");
+    }
+    $flags  = $r->readU8();
+    $tagLen = $r->readU8();
+    if ($tagLen + 2 > $rdLen) {
+      throw new RuntimeException('CAA tag выходит за границы RDATA');
+    }
+    return new static($flags, $r->readBytes($tagLen), $r->readBytes($rdLen - 2 - $tagLen));
+  }
+}
+
+/* OPT */
+final class OptRecord extends DnsRdata
+{
+  // serialize(), serializeWith(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    return new static(options: $r->readBytes($rdLen));
+  }
+}
+
+/* Неизвестный тип */
+final class UnknownRdata extends DnsRdata
+{
+  // serialize(), toJson(), fromJson(), __toString() - без изменений
+
+  public static function fromReader(DnsReader $r, int $rdLen): static
+  {
+    return new static($r->readBytes($rdLen));
+  }
+}
+
+/* ---------- NameCodec::decode теперь тонкая обёртка ---------- */
+
+final class NameCodec
+{
+  // encode(), encodeWith(), toPresentation(), fromPresentation() - без изменений
+
+  /** @return array{0:string, 1:int} [имя, смещение после имени] - старый интерфейс */
+  public static function decode(string $msg, int $off): array
+  {
+    $r = DnsReader::of($msg, $off);
+    $name = $r->readName();
+    return [$name, $r->tell()];
+  }
+}
+
+/* ---------- DnsHeader ---------- */
+
+final class DnsHeader
+{
+  // свойства, serialize(), toJson(), fromJson(), rcodeName() - без изменений
+
+  public static function deserialize(string $buf): self
+  {
+    return self::fromReader(DnsReader::of($buf));
+  }
+
+  public static function fromReader(DnsReader $r): self
+  {
+    $id  = $r->readU16();
+    $flags = $r->readU16();
+    $qd  = $r->readU16();
+    $an  = $r->readU16();
+    $ns  = $r->readU16();
+    $ar  = $r->readU16();
+
+    return new self(
+      id:    $id,
+      qr:    (bool)(($flags >> 15) & 1),
+      opcode:  ($flags >> 11) & 0xF,
+      aa:    (bool)(($flags >> 10) & 1),
+      tc:    (bool)(($flags >> 9)  & 1),
+      rd:    (bool)(($flags >> 8)  & 1),
+      ra:    (bool)(($flags >> 7)  & 1),
+      z:     (bool)(($flags >> 6)  & 1),
+      ad:    (bool)(($flags >> 5)  & 1),
+      cd:    (bool)(($flags >> 4)  & 1),
+      rcode:   $flags & 0xF,
+      qdCount: $qd,
+      anCount: $an,
+      nsCount: $ns,
+      arCount: $ar,
+    );
+  }
+}
+
+/* ---------- DnsQuestion ---------- */
+
+final class DnsQuestion
+{
+  // свойства, serialize(), serializeWith(), toJson(), fromJson() - без изменений
+
+  /** @return array{0:self, 1:int} - старый интерфейс */
+  public static function deserialize(string $msg, int $off = 0): array
+  {
+    return self::fromReader(DnsReader::of($msg, $off));
+  }
+
+  /** @return array{0:self, 1:int} */
+  public static function fromReader(DnsReader $r): array
+  {
+    $name  = $r->readName();
+    $type  = $r->readU16();
+    $class = $r->readU16();
+    return [new self($name, $type, $class), $r->tell()];
+  }
+}
+
+/* ---------- DnsRecord ---------- */
+
+final class DnsRecord
+{
+  // свойства, serialize(), serializeWith(), opt(), toJson(), fromJson(), __toString() - без изменений
+
+  /** @return array{0:self, 1:int} - старый интерфейс */
+  public static function deserialize(string $msg, int $off = 0): array
+  {
+    return self::fromReader(DnsReader::of($msg, $off));
+  }
+
+  /** @return array{0:self, 1:int} */
+  public static function fromReader(DnsReader $r): array
+  {
+    $name  = $r->readName();
+    $type  = $r->readU16();
+    $class = $r->readU16();
+    $ttl   = $r->readU32();
+    $rdLen = $r->readU16();
+
+    $start = $r->tell();
+    $rdata = RdataRegistry::classFor($type)::fromReader($r, $rdLen);
+    if ($r->tell() - $start > $rdLen) {
+      throw new RuntimeException("RDATA типа $type прочитано больше заявленной длины");
+    }
+
+    $record = new self($name, $type, $class, $ttl, $rdata);
+
+    if ($type === 41 && $rdata instanceof OptRecord) {
+      $rdata->udpSize  = $class;
+      $rdata->extRcode = ($ttl >> 24) & 0xFF;
+      $rdata->version  = ($ttl >> 16) & 0xFF;
+      $rdata->do     = (bool)(($ttl >> 15) & 1);
+    }
+
+    return [$record, $r->tell()];
+  }
+}
+
+/* ---------- DnsMessage ---------- */
+
+final class DnsMessage
+{
+  // остальное - без изменений
+
+  public static function deserialize(string $buf): self
+  {
+    $r    = DnsReader::of($buf);
+    $header = DnsHeader::fromReader($r);
+
+    $questions = [];
+    for ($i = 0; $i < $header->qdCount; $i++) {
+      [$question] = DnsQuestion::fromReader($r);
+      $questions[] = $question;
+    }
+
+    $sections = ['answers' => [], 'authority' => [], 'additional' => []];
+    foreach (['answers' => $header->anCount, 'authority' => $header->nsCount, 'additional' => $header->arCount]
+          as $key => $count) {
+      for ($i = 0; $i < $count; $i++) {
+        [$record] = DnsRecord::fromReader($r);
+        $sections[$key][] = $record;
+      }
+    }
+
+    // хвостовые байты (если есть) игнорируем - допускается паддинг
+    return new self($header, $questions, $sections['answers'], $sections['authority'], $sections['additional']);
+  }
+}
+```
+
+## Новые тесты
+
+Добавьте в `doh_tests.php` перед `$t->summary();` - все прежние тесты остаются как есть, они проходят через совместимые врапперы:
+
+```php
+/* ---------- DnsReader: базовое чтение ---------- */
+
+$r = DnsReader::of("\x01\x02\x03\x04\x05");
+$t->eq($r->tell(), 0, 'DnsReader: начальная позиция 0');
+$t->eq($r->readU16(), 0x0102, 'DnsReader: readU16 big-endian');
+$t->eq($r->tell(), 2, 'DnsReader: tell продвинулся на 2');
+$t->eq($r->readU8(), 3, 'DnsReader: readU8');
+$t->eq($r->remaining(), 2, 'DnsReader: remaining после чтений');
+$t->eq($r->readBytes(2), "\x04\x05", 'DnsReader: readBytes ровно до конца');
+$t->eq($r->eof(), true, 'DnsReader: eof после чтения всего буфера');
+
+$t->eq(DnsReader::of(hex2bin('00000001'))->readU32(), 1, 'DnsReader: readU32 big-endian');
+$t->eq(DnsReader::of(hex2bin('FFFF'))->readU16(), 65535, 'DnsReader: readU16 верхняя граница');
+
+/* ---------- DnsReader: выход за границы -> исключения ---------- */
+
+$t->throws(fn() => DnsReader::of("\x01")->readU16(), 'DnsReader: readU16 на одном байте -> исключение');
+$t->throws(fn() => DnsReader::of("\x01\x02\x03")->readU32(), 'DnsReader: readU32 на трёх байтах -> исключение');
+$t->throws(fn() => DnsReader::of("abc")->readBytes(4), 'DnsReader: readBytes за границей -> исключение');
+$t->throws(fn() => DnsReader::of("abc")->readBytes(-1), 'DnsReader: отрицательная длина -> исключение');
+$t->throws(fn() => DnsReader::of("abc")->seek(10), 'DnsReader: seek за границу -> исключение');
+$t->throws(fn() => DnsReader::of("abc")->seek(-1), 'DnsReader: seek в минус -> исключение');
+
+/* ---------- DnsReader: имена ---------- */
+
+// Корень: нулевой байт -> пустая строка, позиция 1
+$rr = DnsReader::of("\x00\xAA\xBB");
+$t->eq($rr->readName(), '', 'DnsReader: корень -> пустая строка');
+$t->eq($rr->tell(), 1, 'DnsReader: корень тратит 1 байт');
+
+// Имя + указатель: позиция и содержимое
+$nameBuf = "\x03www\x07example\x03com\x00" . "\xC0\x0C" . "\x00\x01\x00\x01";
+$rn = DnsReader::of($nameBuf);
+$t->eq($rn->readName(), 'www.example.com', 'DnsReader: имя без указателя');
+$t->eq($rn->tell(), 17, 'DnsReader: позиция после литерального имени');
+$t->eq($rn->readName(), 'www.example.com', 'DnsReader: имя по указателю C0 0C');
+$t->eq($rn->tell(), 19, 'DnsReader: указатель тратит 2 байта в исходном потоке');
+
+// Указатель, ведущий на имя, разобранное частично: a.example.com -> суффикс example.com
+$mix = "\x01a\x07example\x03com\x00" . "\xC0\x02";
+$rm = DnsReader::of($mix);
+$t->eq($rm->readName(), 'a.example.com', 'DnsReader: полное имя');
+$t->eq($rm->readName(), 'example.com', 'DnsReader: указатель на суффикс посреди имени');
+
+// Ошибки имён
+$t->throws(fn() => DnsReader::of('')->readName(), 'DnsReader: readName на пустом буфере -> исключение');
+$t->throws(fn() => DnsReader::of("\xC0")->readName(), 'DnsReader: обрезанный указатель -> исключение');
+$t->throws(fn() => DnsReader::of("\xC0\x00")->readName(), 'DnsReader: указатель на себя -> исключение');
+$t->throws(fn() => DnsReader::of("\x05abcd\x00")->readName(), 'DnsReader: метка длиннее буфера -> исключение');
+$t->throws(fn() => DnsReader::of("\x03ab\x00")->readName(), 'DnsReader: метка длиннее заявленного -> исключение');
+
+// Замкнутый цикл из двух указателей: C0 02 <-> C0 00
+$t->throws(fn() => DnsReader::of("\xC0\x02\xC0\x00")->readName(), 'DnsReader: цикл из двух указателей -> исключение');
+
+/* ---------- DnsMessage::deserialize работает через DnsReader ---------- */
+
+// Внутренний ридер ловит обрезку в середине записи
+$good = new DnsMessage(new DnsHeader(id: 1, qr: true));
+$good->questions[] = new DnsQuestion('example.com', 1);
+$good->answers[] = new DnsRecord('example.com', 1, 1, 60, new ARecord('1.2.3.4'));
+$wire = $good->serialize();
+
+// обрезаем внутри rdata - должно упасть с исключением, а не вернуть мусор
+$t->throws(fn() => DnsMessage::deserialize(substr($wire, 0, strlen($wire) - 1)),
+  'deserialize: обрезка последнего байта rdata -> исключение');
+
+// завышенный anCount при реальных двух записях -> исключение, а не чтение за границей
+$hdr = DnsHeader::deserialize($wire);
+$hdr->anCount = 5;   // на самом деле запись одна
+$forged = $hdr->serialize() . substr($wire, 12);
+$t->throws(fn() => DnsMessage::deserialize($forged),
+  'deserialize: завышенный счётчик секции -> исключение');
+
+// хвостовые байты после корректного сообщения допускаются (паддинг)
+$padded = DnsMessage::deserialize($wire . "\0\0\0\0");
+$t->eq($padded->header->id, 1, 'deserialize: хвостовые байты игнорируются');
+
+/* ---------- RDATA: ридер ловит выход за RDLENGTH ---------- */
+
+// TXT с длиной куска больше rdLen
+$t->throws(fn() => TxtRecord::deserialize("\xFFhello", 0, 3), 'TxtRecord: кусок за границей rdLen -> исключение');
+
+// A-запись с rdLen=3
+$t->throws(fn() => ARecord::fromReader(DnsReader::of("\x01\x02\x03"), 3), 'ARecord: rdLen=3 -> исключение');
+
+// RDATA, потребившая больше заявленного: MX с rdLen=3, но имя литеральное (больше 1 байта)
+$t->throws(fn() => MxRecord::deserialize("\x00\x0A\x07example\x03com\x00", 0, 3),
+  'MxRecord: rdata длиннее rdLen -> исключение');
+```
+
+## Что изменилось по сути
+
+- **Один источник истины для границ.** Раньше каждый класс сам нарезал `substr` и мог промахнуться с арифметикой смещений; теперь вся проверка <данных хватает / не хватает> - в `DnsReader::ensure`, и ошибка всегда одна и та же по форме: <нужно N, осталось M>.
+- **Арифметика с `$off - $rdLen` ушла.** MX, SOA, SRV раньше вычисляли позицию имени внутри RDATA вручную. Теперь ридер стоит на начале RDATA, читает фиксированные поля по порядку, а `readName()` сам разбирает и литералы, и указатели - компактность этих классов заметно выросла.
+- **Совместимость сохранена.** Все `deserialize(string $buf, ...)` остались с прежними сигнатурами и стали тонкими обёртками над `fromReader` - весь ваш накопленный набор тестов (золотые векторы, roundtrip, JSON, сжатие) проходит без правок. Прямой вызов `fromReader(DnsReader ...)` - это путь для новых тестов и для потокового разбора.
+- **Две новых защиты бесплатно.** Проверка <RDATA потребила не больше заявленного> в `DnsRecord::fromReader` и допущение хвостовых байтов после сообщения (паддинг легален, обрезка - нет).
+- **Сериализация не тронута.** `serialize()`, `serializeWith()` и вся JSON-ветка работают поверх уже собранных объектов, ридер им не нужен.
+
+Если захотите пойти дальше по этой линии, следующий естественный шаг - зеркальный `DnsWriter`, который аккумулирует байты записи и берёт на себя патч RDLENGTH из `serializeWith`. Скажите, если нужно.

@@ -3,11 +3,11 @@
 final class OptRecord extends DnsRdata
 {
   public function __construct(
-    public int    $udpSize  = 4096,
-    public int    $extRcode = 0,
-    public int    $version  = 0,
-    public bool   $do      = false,    // флаг DNSSEC OK
-    public string $options  = '',  // сырые EDNS-опции: OPTCODE(2) OPTLEN(2) DATA...
+    public int    $udpSize  =  4096 ,
+    public int    $extRcode =     0 ,
+    public int    $version  =     0 ,
+    public bool   $do       = false , // флаг DNSSEC OK
+    public string $options  =    '' , // сырые EDNS-опции: OPTCODE(2) OPTLEN(2) DATA...
   ) {}
 
   public function serialize(): string
@@ -15,11 +15,11 @@ final class OptRecord extends DnsRdata
     return $this->options;
   }
 
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
     // extRcode / version / DO лежат в TTL ресурсной записи - их
     // восстанавливает DnsRecord::deserialize(), здесь только опции
-    return new static(options: substr($msg, $off, $rdLen));
+    return new static(options: $r->readBytes($rdLen));
   }
 
   public function __toString(): string

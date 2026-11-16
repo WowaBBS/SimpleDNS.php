@@ -9,14 +9,14 @@ final class ARecord extends DnsRdata
     return inet_pton($this->ip) ?: throw new InvalidArgumentException("Некорректный IPv4: {$this->ip}");
   }
 
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
     if ($rdLen !== 4)
       throw new RuntimeException("Некорректная длина A-записи: $rdLen");
     
-    return new static(inet_ntop(substr($msg, $off, 4)));
+    return new static(inet_ntop($r->readBytes(4)));
   }
-
+  
   public function __toString(): string { return $this->ip; }
 
   static function test(TestRunner $t)

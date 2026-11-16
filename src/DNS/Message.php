@@ -69,13 +69,18 @@ final class DnsMessage
   
   public static function deserialize(string $buf): self
   {
-    $header = DnsHeader::deserialize($buf);
-    $off = 12;
+    $r    = DnsReader::of($buf);
+    return self::fromReader($r);
+  }
+  
+  public static function fromReader(DnsReader $r): self
+  {
+    $header = DnsHeader::fromReader($r);
 
     $questions = [];
     for ($i = 0; $i < $header->qdCount; $i++)
     {
-      [$question, $off] = DnsQuestion::deserialize($buf, $off);
+      [$question] = DnsQuestion::fromReader($r);
       $questions[] = $question;
     }
 
@@ -83,7 +88,7 @@ final class DnsMessage
     foreach (['answers' => $header->anCount, 'authority' => $header->nsCount, 'additional' => $header->arCount] as $key => $count)
       for ($i = 0; $i < $count; $i++)
       {
-        [$record, $off] = DnsRecord::deserialize($buf, $off);
+        [$record] = DnsRecord::fromReader($r);
         $sections[$key][] = $record;
       }
 
@@ -104,6 +109,66 @@ final class DnsMessage
   {
     return self::TYPE_NAMES[$type] ?? "TYPE$type";
   }
+
+//****************************************************************
+// Json
+
+  public static function typeFromName(string $name): int
+  {
+    $name = trim($name);
+    if (ctype_digit($name))
+      return (int)$name;
+    
+    $flip = array_flip(self::TYPE_NAMES);
+    if (isset($flip[$name]))
+      return $flip[$name];
+    
+    if (preg_match('/^TYPE(\d+)$/i', $name, $m)) 
+      return (int)$m[1];
+    
+    throw new RuntimeException("Неизвестный тип: $name");
+  }
+
+  public function toJson(): array
+  {
+    $out = $this->header->toJson();
+    foreach (['Question' => $this->questions, 'Answer' => $this->answers,
+          'Authority' => $this->authority, 'Additional' => $this->additional] as $key => $section) {
+      if ($section !== []) {
+        $out[$key] = array_map(fn($x) => $x->toJson(), $section);
+      }
+    }
+    return $out;
+  }
+
+  public static function fromJson(string $json): self
+  {
+    $j = json_decode($json, true);
+    if (!is_array($j)) {
+      throw new RuntimeException('Не удалось разобрать JSON: ' . json_last_error_msg());
+    }
+
+    $m = new self(DnsHeader::fromJson($j));
+
+    foreach ([
+      'Question'   => &$m->questions  ,
+      'Answer'     => &$m->answers    ,
+      'Authority'  => &$m->authority  ,
+      'Additional' => &$m->additional ,
+    ] as $key => &$section) {
+      foreach ($j[$key] ?? [] as $item) {
+        $section[] = is_array($item)
+          ? ($key === 'Question' ? DnsQuestion::fromJson($item) : DnsRecord::fromJson($item))
+          : throw new RuntimeException("Некорректный элемент в $key");
+      }
+    }
+    unset($section);
+
+    return $m;
+  }
+
+//****************************************************************
+// Tests
 
   static function test(TestRunner $t)
   {
@@ -177,63 +242,30 @@ final class DnsMessage
     //TODO; It does not work
     $trunc = substr($resp->serialize(), 0, strlen($rw) - 2); // откусили байт rdata
     $t->throws(fn() => DnsMessage::deserialize($trunc), 'DnsMessage: обрезанный ответ -> исключение');
-  }
 
-//****************************************************************
-// Json
-
-  public static function typeFromName(string $name): int
-  {
-    $name = trim($name);
-    if (ctype_digit($name))
-      return (int)$name;
+    /* ---------- DnsMessage::deserialize работает через DnsReader ---------- */
     
-    $flip = array_flip(self::TYPE_NAMES);
-    if (isset($flip[$name]))
-      return $flip[$name];
+    // Внутренний ридер ловит обрезку в середине записи
+    $good = new DnsMessage(new DnsHeader(id: 1, qr: true));
+    $good->questions[] = new DnsQuestion('example.com', 1);
+    $good->answers[] = new DnsRecord('example.com', 1, 1, 60, new ARecord('1.2.3.4'));
+    $wire = $good->serialize();
     
-    if (preg_match('/^TYPE(\d+)$/i', $name, $m)) 
-      return (int)$m[1];
+    // обрезаем внутри rdata - должно упасть с исключением, а не вернуть мусор
+    $t->throws(fn() => DnsMessage::deserialize(substr($wire, 0, strlen($wire) - 1)),
+      'deserialize: обрезка последнего байта rdata -> исключение');
     
-    throw new RuntimeException("Неизвестный тип: $name");
-  }
-
-  public function toJson(): array
-  {
-    $out = $this->header->toJson();
-    foreach (['Question' => $this->questions, 'Answer' => $this->answers,
-          'Authority' => $this->authority, 'Additional' => $this->additional] as $key => $section) {
-      if ($section !== []) {
-        $out[$key] = array_map(fn($x) => $x->toJson(), $section);
-      }
-    }
-    return $out;
-  }
-
-  public static function fromJson(string $json): self
-  {
-    $j = json_decode($json, true);
-    if (!is_array($j)) {
-      throw new RuntimeException('Не удалось разобрать JSON: ' . json_last_error_msg());
-    }
-
-    $m = new self(DnsHeader::fromJson($j));
-
-    foreach ([
-      'Question'   => &$m->questions  ,
-      'Answer'     => &$m->answers    ,
-      'Authority'  => &$m->authority  ,
-      'Additional' => &$m->additional ,
-    ] as $key => &$section) {
-      foreach ($j[$key] ?? [] as $item) {
-        $section[] = is_array($item)
-          ? ($key === 'Question' ? DnsQuestion::fromJson($item) : DnsRecord::fromJson($item))
-          : throw new RuntimeException("Некорректный элемент в $key");
-      }
-    }
-    unset($section);
-
-    return $m;
+    // завышенный anCount при реальных двух записях -> исключение, а не чтение за границей
+    $hdr = DnsHeader::deserialize($wire);
+    $hdr->anCount = 5;   // на самом деле запись одна
+    $forged = $hdr->serialize() . substr($wire, 12);
+    $t->throws(fn() => DnsMessage::deserialize($forged),
+      'deserialize: завышенный счётчик секции -> исключение');
+    
+    // хвостовые байты после корректного сообщения допускаются (паддинг)
+    $padded = DnsMessage::deserialize($wire . "\0\0\0\0");
+    $t->eq($padded->header->id, 1, 'deserialize: хвостовые байты игнорируются');
+    
   }
 
 //****************************************************************

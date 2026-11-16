@@ -46,10 +46,12 @@ final class DnsHeader
 
   public static function deserialize(string $buf): self
   {
-    if (strlen($buf) < 12)
-      throw new RuntimeException('Ответ короче DNS-заголовка');
-    
-    [$id, $flags, $qd, $an, $ns, $ar] = array_values(unpack('n6', $buf));
+    return self::fromReader(DnsReader::of($buf));
+  }
+
+  public static function fromReader(DnsReader $r): self
+  {
+    [1=>$id, 2=>$flags, 3=>$qd, 4=>$an, 5=>$ns, 6=>$ar] = $r->unpack('n6');
 
     return new self(
       id      : $id,
@@ -87,8 +89,8 @@ final class DnsHeader
     $t->eq($h2->rcode ,      3 , 'DnsHeader: roundtrip rcode');
     $t->eq($h2->ra    , false  , 'DnsHeader: ra по умолчанию false');
     
-    $t->eq(DnsHeader::rcodeName(0), 'NOERROR', 'DnsHeader: rcodeName(0)');
-    $t->eq(DnsHeader::rcodeName(3), 'NXDOMAIN', 'DnsHeader: rcodeName(3)');
+    $t->eq(DnsHeader::rcodeName(0), 'NOERROR'  ,'DnsHeader: rcodeName(0)');
+    $t->eq(DnsHeader::rcodeName(3), 'NXDOMAIN' ,'DnsHeader: rcodeName(3)');
     
     $t->throws(fn() => DnsHeader::deserialize('1235'), 'DnsHeader: буфер < 12 байт -> исключение');
   }

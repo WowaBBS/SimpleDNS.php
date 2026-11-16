@@ -67,15 +67,22 @@ final class DnsRecord
   }
   
   /** @return array{0:self, 1:int} */
-  public static function deserialize(string $msg, int $off): array
+  public static function deserialize(string $msg, int $off = 0): array
   {
-    [$name, $off] = NameCodec::decode($msg, $off);
-    [$type, $class, $ttl, $rdLen] = array_values(unpack('ntype/nclass/Nttl/nrdLen', $msg, $off));
-    $off += 10;
+    return self::fromReader(DnsReader::of($msg, $off));
+  }
+  
+  /** @return array{0:self, 1:int} */
+  public static function fromReader(DnsReader $r): array
+  {
+    $name  = $r->readName();
+    ['tp'=>$type, 'c'=>$class, 'tl'=>$ttl, 'l'=>$rdLen] = $r->unpack('ntp/nc/Ntl/nl');
 
-    $cls   = RdataRegistry::classFor($type);
-    $rdata = $cls::deserialize($msg, $off, $rdLen);
-
+    $start = $r->tell();
+    $rdata = RdataRegistry::classFor($type)::fromReader($r, $rdLen);
+    if ($r->tell() - $start > $rdLen)
+      throw new RuntimeException('RDATA типа $type прочитано больше заявленной длины');
+    
     $record = new self($name, $type, $class, $ttl, $rdata);
 
     if ($type === 41 && $rdata instanceof OptRecord)
@@ -86,7 +93,7 @@ final class DnsRecord
       $rdata->do = (bool)(($ttl >> 15) & 1);
     }
 
-    return [$record, $off + $rdLen];
+    return [$record, $r->tell()];
   }
 
   public function __toString(): string

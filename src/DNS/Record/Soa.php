@@ -27,11 +27,11 @@ final class SoaRecord extends DnsRdata
     $buf .= pack('N5', $this->serial, $this->refresh, $this->retry, $this->expire, $this->minimum);
   }
   
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
-    [$mname, $off] = NameCodec::decode($msg, $off);
-    [$rname, $off] = NameCodec::decode($msg, $off);
-    $n = unpack('Nserial/Nrefresh/Nretry/Nexpire/Nmin', $msg, $off);
+    $mname = $r->readName();
+    $rname = $r->readName();
+    $n = $r->unpack('Nserial/Nrefresh/Nretry/Nexpire/Nmin');
     return new static($mname, $rname, $n['serial'], $n['refresh'], $n['retry'], $n['expire'], $n['min']);
   }
 

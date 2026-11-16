@@ -16,19 +16,17 @@ final class CaaRecord extends DnsRdata
     return chr($this->flags) . chr(strlen($this->tag)) . $this->tag . $this->value;
   }
 
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
     if ($rdLen < 2)
       throw new RuntimeException("Некорректная длина CAA-записи: $rdLen");
     
-    $flags  = ord($msg[$off]);
-    $tagLen = ord($msg[$off + 1]);
+    $flags  = $r->readU8();
+    $tagLen = $r->readU8();
     if ($tagLen + 2 > $rdLen)
       throw new RuntimeException('CAA tag выходит за границы RDATA');
     
-    $tag   = substr($msg, $off + 2, $tagLen);
-    $value = substr($msg, $off + 2 + $tagLen);
-    return new static($flags, $tag, $value);
+    return new static($flags, $r->readBytes($tagLen), $r->readBytes($rdLen - 2 - $tagLen));
   }
 
   public function __toString(): string

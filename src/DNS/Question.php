@@ -23,11 +23,14 @@ final class DnsQuestion
   }
 
   /** @return array{0:self, 1:int} */
-  public static function deserialize(string $msg, int $off): array
+  public static function deserialize(string $msg, int $off): array { return self::fromReader(DnsReader::of($msg, $off)); }
+
+  /** @return array{0:self, 1:int} */
+  public static function fromReader(DnsReader $r): array
   {
-    [$name, $off] = NameCodec::decode($msg, $off);
-    [$type, $class] = array_values(unpack('n2', $msg, $off));
-    return [new self($name, $type, $class), $off + 4];
+    $name  = $r->readName();
+    [1=>$type, 2=>$class] = $r->unpack('n2');
+    return [new self($name, $type, $class), $r->tell()];
   }
 
 //****************************************************************

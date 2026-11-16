@@ -7,6 +7,7 @@ include_once '../Debug/Test.php';
 
 $t = new TestRunner();
 
+DnsReader     ::test($t);
 NameCodec     ::test($t); // NameCodec
 DnsHeader     ::test($t); // DnsHeader
 DnsRdata      ::test($t); // RDATA: известные векторы
@@ -55,10 +56,10 @@ $t->throws(fn() => UnknownRdata::fromJson("\# 5 DEADBEEF"), 'UnknownRdata: длина
 
 /* ---------- Тип-мнемоника туда и обратно ---------- */
 
-$t->eq(DnsMessage::typeFromName('MX'), 15, 'typeFromName: MX -> 15');
-$t->eq(DnsMessage::typeFromName('A'), 1, 'typeFromName: A -> 1');
-$t->eq(DnsMessage::typeFromName('TYPE65'), 65, 'typeFromName: TYPE65 -> 65');
-$t->eq(DnsMessage::typeFromName('65'), 65, 'typeFromName: число -> 65');
+$t->eq(DnsMessage::typeFromName('MX'     ), 15, 'typeFromName: MX -> 15');
+$t->eq(DnsMessage::typeFromName('A'      ),  1, 'typeFromName: A -> 1');
+$t->eq(DnsMessage::typeFromName('TYPE65' ), 65, 'typeFromName: TYPE65 -> 65');
+$t->eq(DnsMessage::typeFromName('65'     ), 65, 'typeFromName: число -> 65');
 $t->eq(DnsMessage::typeName(DnsMessage::typeFromName('SRV')), 'SRV', 'typeName/typeFromName согласованы');
 $t->throws(fn() => DnsMessage::typeFromName('NOTAREALTYPE'), 'typeFromName: мусор -> исключение');
 
@@ -83,17 +84,17 @@ $t->eq($optRec->rdata->do, true, 'OPT JSON: DO');
 
 $resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true, rcode: 0));
 $resp->questions [] = new DnsQuestion ('example.com', 15);
-$resp->answers   [] = new DnsRecord   ('example.com', 15, 1, 3600, new MxRecord(10, 'mail.example.com'));
-$resp->answers   [] = new DnsRecord   ('example.com', 16, 1,   60, new TxtRecord(['hello']));
-$resp->authority [] = new DnsRecord   ('example.com',  2, 1, 1800, new NsRecord('ns1.example.com'));
+$resp->answers   [] = new DnsRecord   ('example.com', 15, 1, 3600, new MxRecord  (10, 'mail.example.com'));
+$resp->answers   [] = new DnsRecord   ('example.com', 16, 1,   60, new TxtRecord (['hello']));
+$resp->authority [] = new DnsRecord   ('example.com',  2, 1, 1800, new NsRecord  ('ns1.example.com'));
 
 $j = json_encode($resp->toJson(), JSON_UNESCAPED_SLASHES);
 $m = DnsMessage::fromJson($j);
 
-$t->eq($m->header->id, 0x1234, 'DnsMessage JSON: id');
-$t->eq($m->header->rcode, 0, 'DnsMessage JSON: Status -> rcode');
-$t->eq($m->header->ra, true, 'DnsMessage JSON: флаг RA');
-$t->eq(count($m->questions), 1, 'DnsMessage JSON: один вопрос');
+$t->eq($m->header->id    ,0x1234 ,'DnsMessage JSON: id');
+$t->eq($m->header->rcode ,     0 ,'DnsMessage JSON: Status -> rcode');
+$t->eq($m->header->ra    , true  ,'DnsMessage JSON: флаг RA');
+$t->eq(count($m->questions),   1 ,'DnsMessage JSON: один вопрос');
 $t->eq($m->questions[0]->name, 'example.com', 'DnsMessage JSON: имя вопроса (без точки)');
 $t->eq($m->answers  [0]->rdata->exchange, 'mail.example.com', 'DnsMessage JSON: MX exchange');
 $t->eq($m->answers  [1]->rdata->texts, ['hello'], 'DnsMessage JSON: TXT');
@@ -115,6 +116,9 @@ $t->eq($g->rcode(), 0, 'Google JSON: rcode без OPT = 0');
 $t->throws(fn() => DnsMessage::fromJson('{не json'), 'DnsMessage::fromJson: невалидный JSON -> исключение');
 $t->throws(fn() => DnsMessage::fromJson('{"Status":0,"Question":[{"Name":"a.com."}]}'),
   'DnsMessage::fromJson: вопрос без Type -> исключение');
+
+// Json
+//****************************************************************
 
 //****************************************************************
 // Compress names
@@ -231,5 +235,7 @@ $badName->questions[] = new DnsQuestion(str_repeat('x', 64), 1);
 $t->throws(fn() => $badName->serializeWith(new NameTable()),
   'Сжатие: метка 64 байта через serializeWith -> исключение');
 
+// Compress
+//****************************************************************
 
 $t->summary();

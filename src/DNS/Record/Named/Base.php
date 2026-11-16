@@ -14,9 +14,9 @@ abstract class NamedRdata extends DnsRdata
     NameCodec::encodeWith($this->target, $table, $buf);
   }
   
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
-    [$name] = NameCodec::decode($msg, $off);
+    $name = $r->readName();
     return new static($name);
   }
 

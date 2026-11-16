@@ -9,12 +9,12 @@ final class AaaaRecord extends DnsRdata
     return inet_pton($this->ip) ?: throw new InvalidArgumentException("Íåêîğğåêòíûé IPv6: {$this->ip}");
   }
 
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
     if ($rdLen !== 16)
       throw new RuntimeException("Íåêîğğåêòíàÿ äëèíà AAAA-çàïèñè: $rdLen");
     
-    return new static(inet_ntop(substr($msg, $off, 16)));
+    return new static(inet_ntop($r->readBytes(16)));
   }
 
   public function __toString(): string { return $this->ip; }

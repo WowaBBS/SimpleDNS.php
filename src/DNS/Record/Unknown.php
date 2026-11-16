@@ -6,11 +6,11 @@ final class UnknownRdata extends DnsRdata
 
   public function serialize(): string { return $this->raw; }
 
-  public static function deserialize(string $msg, int $off, int $rdLen): static
+  public static function fromReader(DnsReader $r, int $rdLen): static
   {
-    return new static(substr($msg, $off, $rdLen));
+    return new static($r->readBytes($rdLen));
   }
-
+  
   public function __toString(): string { return bin2hex($this->raw); }
 
   static function test(TestRunner $t)
