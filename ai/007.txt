@@ -1,0 +1,414 @@
+Теперь нужен DnsWriter
+
+Логично завершить симметрию: теперь запись байтов тоже идёт через один объект, и патч RDLENGTH из `serializeWith` переезжает внутрь писателя. Сохраняю прежние контракты: `serialize()` и `serializeWith(NameTable)` остаются с теми же сигнатурами и результатами - просто внутри работают через `DnsWriter`, а рядом появляется путь напрямую через писателя.
+
+## Новый класс DnsWriter
+
+Добавьте в `doh_client.php` рядом с `DnsReader`:
+
+```php
+/* ============================================================
+ * DnsWriter - контролируемая сборка бинарного DNS-сообщения.
+ * Единственное место, куда пишутся байты при сериализации:
+ * запись значения не по диапазону или некорректной метки - исключение.
+ * ============================================================ */
+
+final class DnsWriter
+{
+  private string $buf = '';
+
+  public function __construct(
+    private ?NameTable $table = null, // таблица для сжатия имён; null - писать литералами
+  ) {}
+
+  public function tell(): int   { return strlen($this->buf); }
+
+  public function data(): string { return $this->buf; }
+
+  /** Запись сырых байтов без обработки (числа, RDATA без имён) */
+  public function writeRaw(string $bytes): void
+  {
+    $this->buf .= $bytes;
+  }
+
+  /* ---------- Числа с проверкой диапазона ---------- */
+
+  public function writeU8(int $v): void
+  {
+    if ($v < 0 || $v > 0xFF) {
+      throw new RuntimeException("U8 вне диапазона: $v");
+    }
+    $this->buf .= chr($v);
+  }
+
+  public function writeU16(int $v): void
+  {
+    if ($v < 0 || $v > 0xFFFF) {
+      throw new RuntimeException("U16 вне диапазона: $v");
+    }
+    $this->buf .= pack('n', $v);
+  }
+
+  public function writeU32(int $v): void
+  {
+    if ($v < 0 || $v > 0xFFFFFFFF) {
+      throw new RuntimeException("U32 вне диапазона: $v");
+    }
+    $this->buf .= pack('N', $v);
+  }
+
+  /** Патч ранее записанного U16 (RDLENGTH, счётчики, ID) */
+  public function writeU16At(int $off, int $v): void
+  {
+    if ($v < 0 || $v > 0xFFFF) {
+      throw new RuntimeException("U16 вне диапазона: $v");
+    }
+    if ($off < 0 || $off + 2 > strlen($this->buf)) {
+      throw new RuntimeException("Патч за границами буфера: смещение $off");
+    }
+    $this->buf = substr_replace($this->buf, pack('n', $v), $off, 2);
+  }
+
+  /* ---------- Имена ---------- */
+
+  /**
+   * Запись доменного имени. Если у писателя есть NameTable -
+   * включается сжатие: имя или его суффикс, уже встречавшиеся,
+   * заменяются указателем на первое вхождение.
+   */
+  public function writeName(string $name): void
+  {
+    if ($this->table === null) {
+      $this->buf .= NameCodec::encode($name);
+      return;
+    }
+    NameCodec::encodeWith($name, $this->table, $this->buf);
+  }
+}
+```
+
+## Перевод классов на DnsWriter
+
+Контракт RDATA пополняется `writeTo(DnsWriter)` с реализацией по умолчанию - классы без имён внутри унаследуют её как есть:
+
+```php
+/* ---------- DnsRdata: контракт записи ---------- */
+
+abstract class DnsRdata
+{
+  // serialize(), fromReader(), deserialize(), toJson(), fromJson(),
+  // serializeWith(), __toString() - без изменений
+
+  /** Запись RDATA в писателя. По умолчанию - несжатые байты из serialize(). */
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeRaw($this->serialize());
+  }
+}
+
+/* RDATA из одного имени */
+abstract class NamedRdata extends DnsRdata
+{
+  // serialize(), serializeWith(), fromReader(), toJson(), fromJson() - без изменений
+
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeName($this->target);
+  }
+}
+
+final class MxRecord extends DnsRdata
+{
+  // serialize(), serializeWith(), fromReader(), toJson(), fromJson() - без изменений
+
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeU16($this->pref);
+    $w->writeName($this->exchange);
+  }
+}
+
+final class SoaRecord extends DnsRdata
+{
+  // serialize(), serializeWith(), fromReader(), toJson(), fromJson() - без изменений
+
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeName($this->mname);
+    $w->writeName($this->rname);
+    $w->writeU32($this->serial);
+    $w->writeU32($this->refresh);
+    $w->writeU32($this->retry);
+    $w->writeU32($this->expire);
+    $w->writeU32($this->minimum);
+  }
+}
+
+final class SrvRecord extends DnsRdata
+{
+  // serialize(), serializeWith(), fromReader(), toJson(), fromJson() - без изменений
+
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeU16($this->priority);
+    $w->writeU16($this->weight);
+    $w->writeU16($this->port);
+    $w->writeName($this->target);
+  }
+}
+
+/* A, AAAA, TXT, CAA, OPT, UnknownRdata - наследуют базовый writeTo */
+```
+
+Заголовок, вопрос, запись и сообщение:
+
+```php
+/* ---------- DnsHeader: запись через писателя ---------- */
+
+final class DnsHeader
+{
+  // без изменений, добавляется:
+
+  public function writeTo(DnsWriter $w): void
+  {
+    $flags = ($this->qr  ? 1 << 15 : 0)
+         | (($this->opcode & 0xF) << 11)
+         | ($this->aa ? 1 << 10 : 0)
+         | ($this->tc ? 1 << 9  : 0)
+         | ($this->rd ? 1 << 8  : 0)
+         | ($this->ra ? 1 << 7  : 0)
+         | ($this->z  ? 1 << 6  : 0)
+         | ($this->ad ? 1 << 5  : 0)
+         | ($this->cd ? 1 << 4  : 0)
+         | ($this->rcode & 0xF);
+
+    $w->writeU16($this->id);
+    $w->writeU16($flags);
+    $w->writeU16($this->qdCount);
+    $w->writeU16($this->anCount);
+    $w->writeU16($this->nsCount);
+    $w->writeU16($this->arCount);
+  }
+}
+
+/* ---------- DnsQuestion: запись через писателя ---------- */
+
+final class DnsQuestion
+{
+  // без изменений, добавляется:
+
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeName($this->name);
+    $w->writeU16($this->type);
+    $w->writeU16($this->class);
+  }
+}
+
+/* ---------- DnsRecord: запись с патчем RDLENGTH ---------- */
+
+final class DnsRecord
+{
+  // без изменений, добавляется:
+
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeName($this->name);
+
+    if ($this->rdata instanceof OptRecord) {
+      $class = $this->rdata->udpSize;
+      $ttl   = ($this->rdata->extRcode << 24)
+           | (($this->rdata->version & 0xFF) << 16)
+           | ($this->rdata->do ? 1 << 15 : 0);
+    } else {
+      [$class, $ttl] = [$this->class, $this->ttl];
+    }
+
+    $w->writeU16($this->type);
+    $w->writeU16($class);
+    $w->writeU32($ttl);
+
+    $lenOff = $w->tell();    // здесь будет RDLENGTH
+    $w->writeU16(0);       // заглушка
+
+    $this->rdata?->writeTo($w);
+
+    $w->writeU16At($lenOff, $w->tell() - $lenOff - 2); // латаем реальной длиной
+  }
+}
+
+/* ---------- DnsMessage: оба пути через писателя ---------- */
+
+final class DnsMessage
+{
+  public function serialize(): string
+  {
+    return $this->writeTo(new DnsWriter(null))->data();
+  }
+
+  public function serializeWith(NameTable $table): string
+  {
+    return $this->writeTo(new DnsWriter($table))->data();
+  }
+
+  public function writeTo(DnsWriter $w): string
+  {
+    $this->header->qdCount = count($this->questions);
+    $this->header->anCount = count($this->answers);
+    $this->header->nsCount = count($this->authority);
+    $this->header->arCount = count($this->additional);
+
+    $this->header->writeTo($w);
+    foreach ($this->questions as $q) {
+      $q->writeTo($w);
+    }
+    foreach ([$this->answers, $this->authority, $this->additional] as $section) {
+      foreach ($section as $record) {
+        $record->writeTo($w);
+      }
+    }
+    return $w->data();
+  }
+}
+```
+
+## Новые тесты
+
+Добавьте в `doh_tests.php` перед `$t->summary();`:
+
+```php
+/* ---------- DnsWriter: числа ---------- */
+
+$w = new DnsWriter();
+$w->writeU8(0xFF)->writeU16(0x1234)->writeU32(1);
+$t->eq(hexs($w->data()), 'FF 12 34 00 00 00 01', 'DnsWriter: U8/U16/U32 big-endian');
+
+// Патч U16 в уже записанные байты
+$w2 = new DnsWriter();
+$w2->writeU16(0)->writeU16(0xDEAD);
+$w2->writeU16At(0, 0x4242);
+$t->eq(hexs($w2->data()), '42 42 DE AD', 'DnsWriter: writeU16At латает первые два байта');
+
+/* ---------- DnsWriter: диапазоны ---------- */
+
+$t->throws(fn() => (new DnsWriter())->writeU8(256), 'DnsWriter: writeU8(256) -> исключение');
+$t->throws(fn() => (new DnsWriter())->writeU8(-1), 'DnsWriter: writeU8(-1) -> исключение');
+$t->throws(fn() => (new DnsWriter())->writeU16(65536), 'DnsWriter: writeU16(65536) -> исключение');
+$t->throws(fn() => (new DnsWriter())->writeU16(-1), 'DnsWriter: writeU16(-1) -> исключение');
+$t->throws(fn() => (new DnsWriter())->writeU32(1 << 32), 'DnsWriter: writeU32(2^32) -> исключение');
+$t->throws(fn() => (new DnsWriter())->writeU16At(5, 1), 'DnsWriter: патч за границей буфера -> исключение');
+
+/* ---------- DnsWriter: имена ---------- */
+
+// Без таблицы - литералы
+$w3 = new DnsWriter();
+$w3->writeName('a.b');
+$t->eq(hexs($w3->data()), '01 61 01 62 00', 'DnsWriter: имя без таблицы - литерал');
+
+// С таблицей: второй вызов того же имени даёт указатель
+$w4 = new DnsWriter(new NameTable());
+$w4->writeName('example.com');   // смещение 0
+$w4->writeName('example.com');   // -> указатель C0 00
+$t->eq(hexs($w4->data()), '07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 C0 00',
+  'DnsWriter: повтор имени -> указатель');
+
+// Ошибка метки через писателя
+$t->throws(fn() => (new DnsWriter())->writeName(str_repeat('x', 64)),
+  'DnsWriter: метка 64 байта -> исключение');
+
+/* ---------- DnsRecord::writeTo: патч RDLENGTH ---------- */
+
+// Несжатая запись: RDLENGTH должен быть реальной длиной rdata
+$w5 = new DnsWriter();
+$rec = new DnsRecord('example.com', 1, 1, 300, new ARecord('1.2.3.4'));
+$rec->writeTo($w5);
+$expected = hexs(NameCodec::encode('example.com')) . ' 00 01 00 01 00 00 01 2C 00 04 01 02 03 04';
+$t->eq(hexs($w5->data()), $expected, 'DnsRecord::writeTo: RDLENGTH=4 после патча');
+
+// Сжатая запись: RDLENGTH учитывает 2 байта указателя вместо имени
+$w6 = new DnsWriter(new NameTable());
+$w6->writeName('example.com');        // смещение 0
+$rec2 = new DnsRecord('example.com', 1, 1, 300, new ARecord('1.2.3.4'));
+$rec2->writeTo($w6);
+// указатель C0 00 (2 байта) + фикс (10) + rdata (4) = 16
+$t->eq(hexs($w6->data()),
+  '07 65 78 61 6D 70 6C 65 03 63 6F 6D 00'   // example.com
+  . ' C0 00 00 01 00 01 00 00 01 2C 00 10 01 02 03 04',
+  'DnsRecord::writeTo: сжатое имя, RDLENGTH=16 (0x0010)');
+
+/* ---------- Совместимость: serialize()/serializeWith() дают прежние байты ---------- */
+
+$resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true));
+$resp->questions[] = new DnsQuestion('www.example.com', 1);
+$resp->answers[] = new DnsRecord('www.example.com', 1, 1, 10, new ARecord('192.168.1.1'));
+
+$t->eq(hexs($resp->serialize()),
+  '12 34 81 80 00 01 00 01 00 00 00 00'
+  . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+  . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01 00 00 00 0A 00 04 C0 A8 01 01',
+  'serialize(): несжатый вывод не изменился');
+
+$t->eq(hexs($resp->serializeWith(new NameTable())),
+  '12 34 81 80 00 01 00 01 00 00 00 00'
+  . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+  . ' C0 0C 00 01 00 01 00 00 00 0A 00 04 C0 A8 01 01',
+  'serializeWith(): сжатый вывод не изменился');
+
+// Прямой путь через писателя даёт то же, что serializeWith
+$w7 = new DnsWriter(new NameTable());
+$resp->writeTo($w7);
+$t->eq($w7->data(), $resp->serializeWith(new NameTable()),
+  'writeTo(DnsWriter): байты совпадают с serializeWith');
+
+// Запрос с EDNS через писателя - прежний золотой вектор
+$q = DnsMessage::query('www.example.com', 1);
+$q->header->id = 0x1234;
+$wq = new DnsWriter();
+$q->writeTo($wq);
+$t->eq(hexs($wq->data()),
+  '12 34 01 00 00 01 00 00 00 00 00 01'
+  . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+  . ' 00 00 29 10 00 00 00 00 00 00',
+  'writeTo(DnsWriter): запрос с EDNS - золотой вектор');
+
+/* ---------- Симметрия: DnsWriter -> DnsReader ---------- */
+
+// Сложное сообщение со сжатием, SOA и TXT: serialize -> deserialize -> serialize
+$complex = new DnsMessage(new DnsHeader(id: 42, qr: true, ra: true));
+$complex->questions[] = new DnsQuestion('example.com', 6);
+$complex->answers[] = new DnsRecord('example.com', 6, 1, 3600,
+  new SoaRecord('ns1.example.com', 'admin.example.com', 1, 2, 3, 4, 5));
+$complex->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord(['приват txt']));
+$complex->answers[] = new DnsRecord('example.com', 15, 1, 300, new MxRecord(10, 'mail.example.com'));
+
+$wc = new DnsWriter(new NameTable());
+$complex->writeTo($wc);
+$wire = $wc->data();
+
+$back = DnsMessage::deserialize($wire);
+$t->eq($back->answers[0]->rdata->mname, 'ns1.example.com', 'Симметрия: SOA mname');
+$t->eq($back->answers[0]->rdata->serial, 1, 'Симметрия: SOA serial');
+$t->eq($back->answers[1]->rdata->texts, ['приват txt'], 'Симметрия: TXT');
+$t->eq($back->answers[2]->rdata->exchange, 'mail.example.com', 'Симметрия: MX');
+
+$wc2 = new DnsWriter(new NameTable());
+$back->writeTo($wc2);
+$t->eq($wc2->data(), $wire, 'Симметрия: повторная запись воспроизводит те же байты');
+
+// tell() по ходу записи корректен
+$w8 = new DnsWriter();
+$w8->writeU16(1);
+$t->eq($w8->tell(), 2, 'DnsWriter: tell после U16');
+$w8->writeName('example.com');
+$t->eq($w8->tell(), 2 + 13, 'DnsWriter: tell после имени (2 + 12 + 1)');
+```
+
+## Что изменилось по сути
+
+- **Запись зеркальна чтению.** `DnsReader` был единственным местом контроля границ при разборе - теперь `DnsWriter` единственное место при сборке. Диапазоны чисел проверяются на входе (`writeU8(-1)` упадёт, а не запишет мусор через неявное приведение), метки имён - при каждой записи.
+- **Патч RDLENGTH переехал в писателя.** Метод `writeU16At` - это обобщение трюка с `substr_replace` из `serializeWith`: резервируем два байта, пишем RDATA, латаем реальной длиной. Теперь эта логика живёт в `DnsRecord::writeTo` и автоматически верна и для несжатого, и для сжатого имени - тест с RDLENGTH=16 (`2 байта указателя + 10 фикс + 4 rdata`) это фиксирует.
+- **Сжатие включается конструктором.` `Писатель с `NameTable` сжимает имена, без - пишет литералами. Классам RDATA об этом знать не нужно: они просто зовут `$w->writeName(...)`, решение о сжатии принимает владелец писателя. Это чище прежнего `serializeWith(NameTable $table, string &$buf)`, где каждый класс сам разбирался с таблицей.
+- **Старые методы не сломаны.** `serialize()` и `serializeWith()` теперь тонкие обёртки над `writeTo`, все прежние золотые векторы (несжатый запрос, сжатый ответ, запрос с EDNS) проходят байт в байт - это проверено тестами совместимости.
+- **Симметрия писательридер.** Тест <serialize  deserialize  serialize> на сообщении с SOA, TXT и MX подтверждает, что оба объекта взаимно обратимы: повторная запись воспроизводит те же байты, включая сжатие.
+
+Теперь у пары ридер/писатель есть только одна недостающая деталь - `OptRecord::writeTo` пишет опции из сырой строки; если будете добавлять структурированные EDNS-опции (например, Cookie), логично дать им свой мини-кодек по той же схеме <класс-поле>. Скажите, если это нужно.

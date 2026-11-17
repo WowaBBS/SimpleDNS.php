@@ -9,6 +9,12 @@ final class SrvRecord extends DnsRdata
     public string $target,
   ) {}
 
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->pack('nnn', $this->priority, $this->weight, $this->port);
+    $w->writeName($this->target);
+  }
+  
   public function serialize(): string
   {
     return pack('nnn', $this->priority, $this->weight, $this->port) . NameCodec::encode($this->target);

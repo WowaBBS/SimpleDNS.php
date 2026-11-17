@@ -7,6 +7,12 @@ final class MxRecord extends DnsRdata
     public string $exchange ,
   ) {}
 
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeU16($this->pref);
+    $w->writeName($this->exchange);
+  }
+  
   public function serialize(): string
   {
     return pack('n', $this->pref) . NameCodec::encode($this->exchange);

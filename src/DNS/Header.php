@@ -28,6 +28,21 @@ final class DnsHeader
     public int  $arCount = 0,
   ) {}
 
+  public function writeTo(DnsWriter $w): void
+  {
+    $flags = ($this->qr  ? 1 << 15 : 0)
+         | (($this->opcode & 0xF) << 11)
+         | ($this->aa ? 1 << 10 : 0)
+         | ($this->tc ? 1 << 9  : 0)
+         | ($this->rd ? 1 << 8  : 0)
+         | ($this->ra ? 1 << 7  : 0)
+         | ($this->z  ? 1 << 6  : 0)
+         | ($this->ad ? 1 << 5  : 0)
+         | ($this->cd ? 1 << 4  : 0)
+         | ($this->rcode & 0xF);
+
+    $w->pack('nnnnnn', $this->id, $flags, $this->qdCount, $this->anCount, $this->nsCount, $this->arCount);
+  }
   public function serialize(): string
   {
     $flags = ($this->qr  ? 1 << 15 : 0)
@@ -101,26 +116,26 @@ final class DnsHeader
   public function toJson(): array
   {
     return [
-      'ID'   => $this->id,
+      'ID'     => $this->id,
       'Status' => $this->rcode,
-      'TC'   => $this->tc,
-      'RD'   => $this->rd,
-      'RA'   => $this->ra,
-      'AD'   => $this->ad,
-      'CD'   => $this->cd,
+      'TC'     => $this->tc,
+      'RD'     => $this->rd,
+      'RA'     => $this->ra,
+      'AD'     => $this->ad,
+      'CD'     => $this->cd,
     ];
   }
 
   public static function fromJson(array $j): self
   {
     return new self(
-      id:  (int)($j['ID'] ?? 0),
-      rcode: (int)($j['Status'] ?? throw new RuntimeException('В JSON нет поля Status')),
-      tc:  (bool)($j['TC'] ?? false),
-      rd:  (bool)($j['RD'] ?? false),
-      ra:  (bool)($j['RA'] ?? false),
-      ad:  (bool)($j['AD'] ?? false),
-      cd:  (bool)($j['CD'] ?? false),
+      id:    (int)($j['ID'     ] ?? 0),
+      rcode: (int)($j['Status' ] ?? throw new RuntimeException('В JSON нет поля Status')),
+      tc:   (bool)($j['TC'     ] ?? false),
+      rd:   (bool)($j['RD'     ] ?? false),
+      ra:   (bool)($j['RA'     ] ?? false),
+      ad:   (bool)($j['AD'     ] ?? false),
+      cd:   (bool)($j['CD'     ] ?? false),
     );
   }
 

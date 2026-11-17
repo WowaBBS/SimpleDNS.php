@@ -30,7 +30,7 @@ final class DnsMessage
     return $m;
   }
 
-  public function serialize(): string
+  public function writeTo(DnsWriter $w): string
   {
     // счётчики секций - из фактического содержимого
     $this->header->qdCount = count($this->questions  );
@@ -38,38 +38,23 @@ final class DnsMessage
     $this->header->nsCount = count($this->authority  );
     $this->header->arCount = count($this->additional );
 
-    $out = $this->header->serialize();
+    $this->header->writeTo($w);
     foreach ($this->questions as $q)
-      $out .= $q->serialize();
+      $q->writeTo($w);
     
     foreach ([$this->answers, $this->authority, $this->additional] as $section)
       foreach ($section as $record)
-        $out .= $record->serialize();
+        $record->writeTo($w);
     
-    return $out;
+    return $w->data();
   }
-
-  public function serializeWith(NameTable $table): string
-  {
-    $this->header->qdCount = count($this->questions  );
-    $this->header->anCount = count($this->answers    );
-    $this->header->nsCount = count($this->authority  );
-    $this->header->arCount = count($this->additional );
-
-    $buf = $this->header->serialize();
-    foreach ($this->questions as $q)
-      $q->serializeWith($table, $buf);
-    
-    foreach ([$this->answers, $this->authority, $this->additional] as $section)
-      foreach ($section as $record)
-        $record->serializeWith($table, $buf);
-    
-    return $buf;
-  }
+  
+  public function serialize    (                ): string { return new DnsWriter(null  )->writePacket($this)->data(); }
+  public function serializeWith(NameTable $table): string { return new DnsWriter($table)->writePacket($this)->data(); }
   
   public static function deserialize(string $buf): self
   {
-    $r    = DnsReader::of($buf);
+    $r = DnsReader::of($buf);
     return self::fromReader($r);
   }
   
@@ -183,10 +168,10 @@ final class DnsMessage
     
     // Ответ: собираем вручную и гоняем туда-обратно
     $resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true));
-    $resp->questions[] = new DnsQuestion('example.com', 1);
-    $resp->answers  [] = new DnsRecord  ('example.com', 1, 1, 300, new ARecord('93.184.216.34'));
-    $resp->answers  [] = new DnsRecord  ('example.com', 5, 1, 300, new CnameRecord('cname.example.com'));
-    $resp->answers  [] = new DnsRecord  ('example.com', 16, 1, 60, new TxtRecord(['hello', 'world']));
+    $resp->questions[] = new DnsQuestion('example.com',  1);
+    $resp->answers  [] = new DnsRecord  ('example.com',  1, 1, 300, new ARecord('93.184.216.34'));
+    $resp->answers  [] = new DnsRecord  ('example.com',  5, 1, 300, new CnameRecord('cname.example.com'));
+    $resp->answers  [] = new DnsRecord  ('example.com', 16, 1,  60, new TxtRecord(['hello', 'world']));
     $rw = $resp->serialize();
     $resp2 = DnsMessage::deserialize($rw);
     $t->eq($resp2->serialize(), $rw, 'DnsMessage: ответ roundtrip байт в байт');

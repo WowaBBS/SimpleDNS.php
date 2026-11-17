@@ -5,6 +5,12 @@
 
 abstract class DnsRdata
 {
+  /** Запись RDATA в писателя. По умолчанию - несжатые байты из serialize(). */
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeRaw($this->serialize());
+  }
+  
   /** Бинарное представление RDATA (имена - без сжатия) */
   abstract public function serialize(): string;
 

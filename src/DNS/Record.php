@@ -19,6 +19,31 @@ final class DnsRecord
     return new self('', 41, $udpSize, 0, new OptRecord($udpSize, do: $dnssec));
   }
 
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeName($this->name);
+
+    if ($this->rdata instanceof OptRecord)
+    {
+      $class =  $this->rdata->udpSize;
+      $ttl   = ($this->rdata->extRcode << 24)
+            | (($this->rdata->version & 0xFF) << 16)
+            |  ($this->rdata->do ? 1 << 15 : 0);
+    }
+    else
+    {
+      [$class, $ttl] = [$this->class, $this->ttl];
+    }
+
+    $w->pack('nnNn', $this->type, $class, $ttl, 0);
+
+    $lenOff = $w->tell();    // здесь будет RDLENGTH
+
+    $this->rdata?->writeTo($w);
+
+    $w->writeU16At($lenOff-2, $w->tell() - $lenOff); // латаем реальной длиной
+  }
+  
   public function serialize(): string
   {
     $rdata = $this->rdata?->serialize() ?? '';

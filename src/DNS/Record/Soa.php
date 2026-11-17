@@ -12,6 +12,13 @@ final class SoaRecord extends DnsRdata
     public int    $minimum ,
   ) {}
 
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeName($this->mname);
+    $w->writeName($this->rname);
+    $w->pack('N5', $this->serial, $this->refresh, $this->retry, $this->expire, $this->minimum);
+  }
+  
   public function serialize(): string
   {
     return 

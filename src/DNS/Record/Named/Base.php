@@ -4,6 +4,11 @@ abstract class NamedRdata extends DnsRdata
 {
   public function __construct(public string $target) {}
 
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeName($this->target);
+  }
+  
   public function serialize(): string
   {
     return NameCodec::encode($this->target);

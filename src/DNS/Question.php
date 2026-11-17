@@ -11,6 +11,12 @@ final class DnsQuestion
     public int    $class = 1, // IN
   ) {}
 
+  public function writeTo(DnsWriter $w): void
+  {
+    $w->writeName($this->name);
+    $w->pack('nn', $this->type, $this->class);
+  }
+  
   public function serialize(): string
   {
     return NameCodec::encode($this->name) . pack('nn', $this->type, $this->class);

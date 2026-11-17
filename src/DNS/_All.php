@@ -9,3 +9,4 @@ Include_Once 'Record.php'         ;
 Include_Once 'Message.php'        ;
 Include_Once 'Transport/_All.php' ;
 Include_Once 'Reader.php'         ;
+Include_Once 'Writer.php'         ;
