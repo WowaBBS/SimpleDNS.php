@@ -9,10 +9,10 @@ final class AaaaRecord extends DnsRdata
     return inet_pton($this->ip) ?: throw new InvalidArgumentException("Некорректный IPv6: {$this->ip}");
   }
 
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
-    if ($rdLen !== 16)
-      throw new RuntimeException("Некорректная длина AAAA-записи: $rdLen");
+    if ($r->remaining() !== 16)
+      throw new RuntimeException('Некорректная длина AAAA-записи: '.$r->remaining());
     
     return new static(inet_ntop($r->readBytes(16)));
   }
@@ -21,7 +21,7 @@ final class AaaaRecord extends DnsRdata
 
   static function test(TestRunner $t)
   {
-   $t->eq((AaaaRecord::deserialize(inet_pton('2001:db8::1'), 0, 16))->ip, '2001:db8::1', 'AaaaRecord: roundtrip 2001:db8::1');
+   $t->eq((AaaaRecord::deserialize(inet_pton('2001:db8::1')))->ip, '2001:db8::1', 'AaaaRecord: roundtrip 2001:db8::1');
    $t->throws(fn() => AaaaRecord::deserialize(inet_pton('2001:db8::1'), 0, 15), 'AaaaRecord: rdLen != 16 -> исключение');
   }
 

@@ -19,7 +19,7 @@ abstract class NamedRdata extends DnsRdata
     NameCodec::encodeWith($this->target, $table, $buf);
   }
   
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
     $name = $r->readName();
     return new static($name);
@@ -36,7 +36,7 @@ abstract class NamedRdata extends DnsRdata
        . "\x07target"         // не важная часть
        . "\xC0\x0C"           // CNAME rdata: указатель на "example.com"
     ;
-    $cname = CnameRecord::deserialize($msg, 0 + strlen($msg) - 2, 2);
+    $cname = CnameRecord::deserialize($msg, -2);
     $t->eq($cname->target, 'example.com', 'RdataName: указатель из RDATA в вопрос разрешается');
   }
 

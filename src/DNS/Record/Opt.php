@@ -15,11 +15,11 @@ final class OptRecord extends DnsRdata
     return $this->options;
   }
 
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
     // extRcode / version / DO лежат в TTL ресурсной записи - их
     // восстанавливает DnsRecord::deserialize(), здесь только опции
-    return new static(options: $r->readBytes($rdLen));
+    return new static(options: $r->readBytes($r->remaining()));
   }
 
   public function __toString(): string
@@ -31,7 +31,7 @@ final class OptRecord extends DnsRdata
   {
     // OPT: класс несёт UDP-размер, TTL - extRcode/version/DO
     $buf = "\0" . pack('nnNn', 41, 1232, 1 << 15, 0);
-    [$optRec] = DnsRecord::deserialize($buf, 0);
+    [$optRec] = DnsRecord::deserialize($buf);
     $t->eq($optRec->rdata instanceof OptRecord, true, 'OptRecord: тип распознан реестром');
     $t->eq($optRec->rdata->udpSize, 1232, 'OptRecord: udpSize из поля class');
     $t->eq($optRec->rdata->do, true, 'OptRecord: флаг DO из TTL');

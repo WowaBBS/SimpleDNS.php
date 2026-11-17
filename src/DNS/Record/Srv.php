@@ -26,10 +26,10 @@ final class SrvRecord extends DnsRdata
     NameCodec::encodeWith($this->target, $table, $buf);
   }
   
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
-    if ($rdLen < 7)
-      throw new RuntimeException("Некорректная длина SRV-записи: $rdLen");
+    if ($r->remaining() < 7)
+      throw new RuntimeException('Некорректная длина SRV-записи: '.$r->remaining());
     
     $n = $r->unpack('npriority/nweight/nport');
     return new static($n['priority'], $n['weight'], $n['port'], $r->readName());
@@ -43,7 +43,7 @@ final class SrvRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $srv = new SrvRecord(1, 5, 5061, 'sip.example.com');
-    $srv2 = SrvRecord::deserialize($srv->serialize(), 0, strlen($srv->serialize()));
+    $srv2 = SrvRecord::deserialize($srv->serialize());
     $t->eq([$srv2->priority, $srv2->weight, $srv2->port, $srv2->target], [1, 5, 5061, 'sip.example.com'], 'SrvRecord: roundtrip');
   }
 

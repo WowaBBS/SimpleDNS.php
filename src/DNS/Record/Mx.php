@@ -24,10 +24,10 @@ final class MxRecord extends DnsRdata
     NameCodec::encodeWith($this->exchange, $table, $buf);
   }
   
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
-    if ($rdLen < 3)
-      throw new RuntimeException("Некорректная длина MX-записи: $rdLen");
+    if ($r->remaining() < 3)
+      throw new RuntimeException('Некорректная длина MX-записи: '.$r->remaining());
     
     $pref = $r->readU16();
     $exchange = $r->readName();
@@ -39,7 +39,7 @@ final class MxRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $mx = new MxRecord(10, 'mail.example.com');
-    [$mx2] = [MxRecord::deserialize($mx->serialize(), 0, strlen($mx->serialize()))];
+    $mx2 = MxRecord::deserialize($mx->serialize());
     $t->eq([$mx2->pref, $mx2->exchange], [10, 'mail.example.com'], 'MxRecord: roundtrip');
   }
 

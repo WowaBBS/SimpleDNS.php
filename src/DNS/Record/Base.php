@@ -24,18 +24,18 @@ abstract class DnsRdata
   }
 
   /** Чтение RDATA из ридера, стоящего на начале RDATA (ридер - над всем сообщением) */
-  abstract public static function fromReader(DnsReader $r, int $rdLen): static;
+  abstract public static function fromReader(DnsReader $r): static;
   
   /**
    * Разбор RDATA. $off - абсолютное смещение начала RDATA в сообщении
    * (нужно целиком сообщение, т.к. имена внутри RDATA могут быть сжаты указателями).
    */
-  public static final function deserialize(string $msg, int $off, int $rdLen): static
+  public static final function deserialize(string $msg, int $off=0, ?int $rdLen=null): static
   {
-    $r = DnsReader::of($msg, $off);
+    $r = DnsReader::of($msg, $off, $rdLen);
     $start = $r->tell();
-    $obj = static::fromReader($r, $rdLen);
-    if ($r->tell() - $start > $rdLen)
+    $obj = static::fromReader($r);
+    if ($r->remaining() > 0)
       throw new RuntimeException('RDATA прочитано больше, чем заявлено в RDLENGTH');
     
     return $obj;

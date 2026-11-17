@@ -16,17 +16,17 @@ final class CaaRecord extends DnsRdata
     return chr($this->flags) . chr(strlen($this->tag)) . $this->tag . $this->value;
   }
 
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
-    if ($rdLen < 2)
-      throw new RuntimeException("Некорректная длина CAA-записи: $rdLen");
+    if ($r->remaining() < 2)
+      throw new RuntimeException('Некорректная длина CAA-записи: '.$r->remaining());
     
     $flags  = $r->readU8();
     $tagLen = $r->readU8();
-    if ($tagLen + 2 > $rdLen)
+    if ($tagLen > $r->remaining())
       throw new RuntimeException('CAA tag выходит за границы RDATA');
     
-    return new static($flags, $r->readBytes($tagLen), $r->readBytes($rdLen - 2 - $tagLen));
+    return new static($flags, $r->readBytes($tagLen), $r->readBytes($r->remaining()));
   }
 
   public function __toString(): string
@@ -37,7 +37,7 @@ final class CaaRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $caa = new CaaRecord(0, 'issue', 'letsencrypt.org');
-    $caa2 = CaaRecord::deserialize($caa->serialize(), 0, strlen($caa->serialize()));
+    $caa2 = CaaRecord::deserialize($caa->serialize());
     $t->eq($caa2->flags, 0, 'CaaRecord: roundtrip flags');
     $t->eq($caa2->tag, 'issue', 'CaaRecord: roundtrip tag');
     $t->eq($caa2->value, 'letsencrypt.org', 'CaaRecord: roundtrip value');

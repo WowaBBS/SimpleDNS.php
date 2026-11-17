@@ -7,25 +7,50 @@
 
 final class DnsReader
 {
+  private  string $buf;
+  private  int    $off;
+  private  int    $max;
+  
   public function __construct(
-    private string $buf,
-    private int  $off = 0,
-  ) {}
-
-  public static function of(string $buf, int $off = 0): self
+    string $buf,
+    int    $off,
+    int    $max,
+  )
   {
-    return new self($buf, $off);
+    $this->buf = $buf;
+    $this->off = $off;
+    $this->max = $max;
+    if ($max > strlen($buf)) throw new LogicException('Limit is more than size');
+  }
+           
+  public static function of(string $buf, int $off = 0, ?int $len = null): self
+  {
+    if ($off < 0) $off += strlen($buf);
+    if ($len === null)
+      $max = strlen($buf);
+    else
+      $max = $len >= 0? $len + $off: strlen($buf) + $len;
+    
+    return new self($buf, $off, $max);
+  }
+  
+  public function sub(int $len)
+  {
+    $this->ensure($len);
+    $result = static::of($this->buf, $this->off, $len);
+    $this->off += $len;
+    return $result;
   }
 
   public function tell(): int    { return $this->off; }
 
-  public function remaining(): int { return strlen($this->buf) - $this->off; }
+  public function remaining(): int { return $this->max - $this->off; }
 
-  public function eof(): bool    { return $this->off >= strlen($this->buf); }
+  public function eof(): bool    { return $this->off >= $this->max; }
 
   public function seek(int $off): void
   {
-    if ($off < 0 || $off > strlen($this->buf))
+    if ($off < 0 || $off > $this->max)
       throw new RuntimeException("Некорректная позиция чтения: $off");
     
     $this->off = $off;
@@ -37,7 +62,7 @@ final class DnsReader
     if ($n < 0)
       throw new RuntimeException('Отрицательная длина чтения');
     
-    if ($this->off + $n > strlen($this->buf))
+    if ($this->off + $n > $this->max)
       throw new RuntimeException(sprintf(
         'Не хватает %s: нужно %d, в буфере осталось %d',
         $what, $n, $this->remaining(),
@@ -134,7 +159,7 @@ final class DnsReader
   public function readName(): string
   {
     $buf  = $this->buf;
-    $max  = strlen($buf);
+    $max  = $this->max;
     $off  = $this->off;
     $labels = [];
     $end  = null;   // куда встать после имени в исходном потоке

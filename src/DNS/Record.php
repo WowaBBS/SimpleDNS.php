@@ -104,7 +104,7 @@ final class DnsRecord
     ['tp'=>$type, 'c'=>$class, 'tl'=>$ttl, 'l'=>$rdLen] = $r->unpack('ntp/nc/Ntl/nl');
 
     $start = $r->tell();
-    $rdata = RdataRegistry::classFor($type)::fromReader($r, $rdLen);
+    $rdata = RdataRegistry::classFor($type)::fromReader($r->sub($rdLen));
     if ($r->tell() - $start > $rdLen)
       throw new RuntimeException('RDATA типа $type прочитано больше заявленной длины');
     

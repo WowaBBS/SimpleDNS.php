@@ -9,10 +9,10 @@ final class ARecord extends DnsRdata
     return inet_pton($this->ip) ?: throw new InvalidArgumentException("Некорректный IPv4: {$this->ip}");
   }
 
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
-    if ($rdLen !== 4)
-      throw new RuntimeException("Некорректная длина A-записи: $rdLen");
+    if ($r->remaining() !== 4)
+      throw new RuntimeException('Некорректная длина A-записи: '.$r->remaining());
     
     return new static(inet_ntop($r->readBytes(4)));
   }
@@ -22,7 +22,7 @@ final class ARecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $t->eq(hexs((new ARecord('192.168.1.1'))->serialize()), 'C0 A8 01 01', 'ARecord: точные байты 192.168.1.1');
-    $t->eq((ARecord::deserialize("\xC0\xA8\x01\x01", 0, 4))->ip, '192.168.1.1', 'ARecord: deserialize');
+    $t->eq((ARecord::fromReader(DnsReader::of("\xC0\xA8\x01\x01")))->ip, '192.168.1.1', 'ARecord: fromReader');
     $t->throws(fn() => (new ARecord('999.1.1.1'))->serialize(), 'ARecord: некорректный IP -> исключение');
   }
 

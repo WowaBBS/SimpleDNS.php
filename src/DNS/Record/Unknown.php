@@ -6,9 +6,9 @@ final class UnknownRdata extends DnsRdata
 
   public function serialize(): string { return $this->raw; }
 
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
-    return new static($r->readBytes($rdLen));
+    return new static($r->readBytes($r->remaining()));
   }
   
   public function __toString(): string { return bin2hex($this->raw); }
@@ -16,7 +16,7 @@ final class UnknownRdata extends DnsRdata
   static function test(TestRunner $t)
   {
     $unk = new UnknownRdata("\xDE\xAD\xBE\xEF");
-    $t->eq(UnknownRdata::deserialize($unk->serialize(), 0, 4)->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata: байты сохран€ютс€ как есть');
+    $t->eq(UnknownRdata::deserialize($unk->serialize())->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata: байты сохран€ютс€ как есть');
   }
 
 //****************************************************************

@@ -21,11 +21,11 @@ final class TxtRecord extends DnsRdata
     return $out;
   }
 
-  public static function fromReader(DnsReader $r, int $rdLen): static
+  public static function fromReader(DnsReader $r): static
   {
     $texts  = [];
     $consumed = 0;
-    while ($consumed < $rdLen) 
+    while ($r->remaining() > 0) 
     {
       $l = $r->readU8();
       $texts[] = $r->readBytes($l);   // выйдет за rdLen -> исключение из ридера
@@ -39,21 +39,21 @@ final class TxtRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $txt = new TxtRecord(['v=spf1 include:_spf.example.com ~all']);
-    $txt2 = TxtRecord::deserialize($txt->serialize(), 0, strlen($txt->serialize()));
+    $txt2 = TxtRecord::deserialize($txt->serialize());
     $t->eq((string)$txt2, 'v=spf1 include:_spf.example.com ~all', 'TxtRecord: roundtrip одной строки');
 
     // TXT длиннее 255 байт: режется на куски, при повторной сериализации байты совпадают
     $long     = str_repeat('x', 300);
     $txtLong  = new TxtRecord([$long]);
     $wire     = $txtLong->serialize();
-    $txtLong2 = TxtRecord::deserialize($wire, 0, strlen($wire));
+    $txtLong2 = TxtRecord::deserialize($wire);
     $t->eq(strlen($wire), 255 + 1 + 45 + 1, 'TxtRecord: 300 символов -> два куска 255+45');
     $t->eq($txtLong2->serialize(), $wire, 'TxtRecord: повторная сериализация байт в байт');
     $t->eq((string)$txtLong2, $long, 'TxtRecord: сращённый текст равен исходному');
 
     // TXT из нескольких строк
     $txtMulti = new TxtRecord(['a', 'b']);
-    $txtMulti2 = TxtRecord::deserialize($txtMulti->serialize(), 0, strlen($txtMulti->serialize()));
+    $txtMulti2 = TxtRecord::deserialize($txtMulti->serialize());
     $t->eq($txtMulti2->texts, ['a', 'b'], 'TxtRecord: несколько строк roundtrip');
   }
 
