@@ -6,6 +6,8 @@
 
 final class DnsMessage
 {
+  use Packet; // deserialize(string $msg, int $off = 0, ?int $rdLen = null): static
+
   private const TYPE_NAMES = [
     1 => 'A', 2 => 'NS', 5 => 'CNAME', 6 => 'SOA', 12 => 'PTR',
     15 => 'MX', 16 => 'TXT', 28 => 'AAAA', 33 => 'SRV', 41 => 'OPT', 257 => 'CAA',
@@ -52,7 +54,6 @@ final class DnsMessage
   public function serialize    (                ): string { return new DnsWriter(null  )->writePacket($this)->data(); }
   public function serializeWith(NameTable $table): string { return new DnsWriter($table)->writePacket($this)->data(); }
   
-//public static function deserialize(string $buf): self { return self::fromReader(DnsReader::of($buf)); }
   
   public static function fromReader(DnsReader $r): self
   {

@@ -5,6 +5,8 @@
 
 final class DnsHeader
 {
+  use Packet; // deserialize(string $msg, int $off = 0, ?int $rdLen = null): self
+
   private const RCODES = [
     0 => 'NOERROR', 1 => 'FORMERR', 2 => 'SERVFAIL', 3 => 'NXDOMAIN',
     4 => 'NOTIMP',  5 => 'REFUSED',
@@ -59,7 +61,6 @@ final class DnsHeader
     return pack('nnnnnn', $this->id, $flags, $this->qdCount, $this->anCount, $this->nsCount, $this->arCount);
   }
 
-//public static function deserialize(string $buf): self { return self::fromReader(DnsReader::of($buf)); }
 
   public static function fromReader(DnsReader $r): self
   {
