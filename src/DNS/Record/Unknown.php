@@ -46,4 +46,13 @@ final class UnknownRdata extends DnsRdata
   }
 
 //****************************************************************
+
+  static function testJson(TestRunner $t)
+  {
+    // Неизвестный тип через \#
+    $unkBack = UnknownRdata::fromJson("\# 4 DEADBEEF");
+    $t->eq($unkBack->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata::fromJson: \\#-формат');
+    $t->eq($unkBack->toJson(), "\# 4 DEADBEEF", 'UnknownRdata->toJson: \\#-формат');
+    $t->throws(fn() => UnknownRdata::fromJson("\# 5 DEADBEEF"), 'UnknownRdata: длина != hex -> исключение');
+  }
 }

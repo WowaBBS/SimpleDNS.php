@@ -78,4 +78,17 @@ final class TxtRecord extends DnsRdata
   }
 
 //****************************************************************
+
+  static function testJson(TestRunner $t)
+  {
+    // TXT с кавычками и обратным слэшем: экранирование и возврат
+    $txtTricky = new TxtRecord(['say "hi"', 'back\\slash']);
+    $json = $txtTricky->toJson();
+    $t->eq($json, '"say \\"hi\\"" "back\\\\slash"', 'TxtRecord->toJson: экранирование');
+    $t->eq(TxtRecord::fromJson($json)->texts, $txtTricky->texts, 'TxtRecord JSON roundtrip с экранированием');
+
+    // TXT из JSON реального вида (несколько строк)
+    $txtBack = TxtRecord::fromJson('"part1" "part2"');
+    $t->eq($txtBack->texts, ['part1', 'part2'], 'TxtRecord::fromJson: две строки');
+  }
 }

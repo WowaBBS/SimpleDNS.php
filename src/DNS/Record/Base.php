@@ -76,4 +76,21 @@ abstract class DnsRdata
   abstract public static function fromJson(string $data): static;
   
 //****************************************************************
+
+  static function testJson(TestRunner $t)
+  {
+    foreach ([
+      [new ARecord     ('93.184.216.34'), '93.184.216.34'],
+      [new AaaaRecord  ('2001:db8::1'), '2001:db8::1'],
+      [new CnameRecord ('cname.example.com'), 'cname.example.com.'],
+      [new MxRecord    (10, 'mail.example.com'), '10 mail.example.com.'],
+      [new SoaRecord   ('ns1.example.com', 'admin.example.com', 2024010101, 7200, 900, 1209600, 3600),
+       'ns1.example.com. admin.example.com. 2024010101 7200 900 1209600 3600'],
+      [new SrvRecord(1, 5, 5061, 'sip.example.com'), '1 5 5061 sip.example.com.'],
+    ] as [$rec, $want]) {
+      $t->eq($rec->toJson(), $want, 'Rdata->toJson: ' . (string)$rec);
+      $clone = $rec::fromJson($want);
+      $t->eq($clone->serialize(), $rec->serialize(), 'Rdata JSON roundtrip (байты): ' . (string)$rec);
+    }
+  }
 }

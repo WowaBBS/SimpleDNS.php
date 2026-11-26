@@ -175,4 +175,24 @@ final class DnsRecord
   }
   
 //****************************************************************
+
+  static function testJson(TestRunner $t)
+  {
+    /* ---------- JSON: запись целиком ---------- */
+
+    $a = new DnsRecord('example.com', 1, 1, 300, new ARecord('93.184.216.34'));
+    $aj = $a->toJson();
+    $t->eq($aj, ['Name' => 'example.com.', 'Type' => 'A', 'TTL' => 300, 'Data' => '93.184.216.34'],
+      'DnsRecord->toJson: точная структура');
+    $back = DnsRecord::fromJson($aj);
+    $t->eq($back->serialize(), $a->serialize(), 'DnsRecord JSON roundtrip (байты)');
+
+    // OPT: нестандартные поля EDNS переносятся
+    $optJson = ['Name' => '.', 'Type' => 'OPT', 'Data' => "\# 0",
+          'UDPSize' => 1232, 'ExtRcode' => 1, 'Version' => 0, 'DO' => true];
+    $optRec = DnsRecord::fromJson($optJson);
+    $t->eq($optRec->rdata->udpSize, 1232, 'OPT JSON: UDPSize');
+    $t->eq($optRec->rdata->extRcode, 1, 'OPT JSON: ExtRcode');
+    $t->eq($optRec->rdata->do, true, 'OPT JSON: DO');
+  }
 }

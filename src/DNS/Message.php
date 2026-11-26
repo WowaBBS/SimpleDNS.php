@@ -251,4 +251,230 @@ final class DnsMessage
   }
 
 //****************************************************************
+
+  static function testJson(TestRunner $t)
+  {
+    /* ---------- Тип-мнемоника туда и обратно ---------- */
+
+    $t->eq(DnsMessage::typeFromName('MX'     ), 15, 'typeFromName: MX -> 15');
+    $t->eq(DnsMessage::typeFromName('A'      ),  1, 'typeFromName: A -> 1');
+    $t->eq(DnsMessage::typeFromName('TYPE65' ), 65, 'typeFromName: TYPE65 -> 65');
+    $t->eq(DnsMessage::typeFromName('65'     ), 65, 'typeFromName: число -> 65');
+    $t->eq(DnsMessage::typeName(DnsMessage::typeFromName('SRV')), 'SRV', 'typeName/typeFromName согласованы');
+    $t->throws(fn() => DnsMessage::typeFromName('NOTAREALTYPE'), 'typeFromName: мусор -> исключение');
+
+    /* ---------- JSON: сообщение целиком, круговое преобразование ---------- */
+
+    $resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true, rcode: 0));
+    $resp->questions [] = new DnsQuestion ('example.com', 15);
+    $resp->answers   [] = new DnsRecord   ('example.com', 15, 1, 3600, new MxRecord  (10, 'mail.example.com'));
+    $resp->answers   [] = new DnsRecord   ('example.com', 16, 1,   60, new TxtRecord (['hello']));
+    $resp->authority [] = new DnsRecord   ('example.com',  2, 1, 1800, new NsRecord  ('ns1.example.com'));
+
+    $j = json_encode($resp->toJson(), JSON_UNESCAPED_SLASHES);
+    $m = DnsMessage::fromJson($j);
+
+    $t->eq($m->header->id    ,0x1234 ,'DnsMessage JSON: id');
+    $t->eq($m->header->rcode ,     0 ,'DnsMessage JSON: Status -> rcode');
+    $t->eq($m->header->ra    , true  ,'DnsMessage JSON: флаг RA');
+    $t->eq(count($m->questions),   1 ,'DnsMessage JSON: один вопрос');
+    $t->eq($m->questions[0]->name, 'example.com', 'DnsMessage JSON: имя вопроса (без точки)');
+    $t->eq($m->answers  [0]->rdata->exchange, 'mail.example.com', 'DnsMessage JSON: MX exchange');
+    $t->eq($m->answers  [1]->rdata->texts, ['hello'], 'DnsMessage JSON: TXT');
+    $t->eq($m->authority[0]->rdata->target, 'ns1.example.com', 'DnsMessage JSON: NS в Authority');
+
+    // Повторный toJson - тот же JSON (после roundtrip содержимое не изменилось)
+    $t->eq($m->toJson(), $resp->toJson(), 'DnsMessage JSON: двойной roundtrip стабилен');
+
+    // Известный JSON-вектор (как их отдаёт Google /resolve)
+    $gJson = '{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,'
+         . '"Question":[{"Name":"example.com.","Type":"A"}],'
+         . '"Answer":[{"Name":"example.com.","Type":"A","TTL":86400,"Data":"93.184.216.34"}]}';
+    $g = DnsMessage::fromJson($gJson);
+    $t->eq($g->answers[0]->rdata->ip, '93.184.216.34', 'Google JSON: rdata A-записи');
+    $t->eq($g->answers[0]->ttl, 86400, 'Google JSON: TTL');
+    $t->eq($g->rcode(), 0, 'Google JSON: rcode без OPT = 0');
+
+    // Битый JSON -> исключение
+    $t->throws(fn() => DnsMessage::fromJson('{не json'), 'DnsMessage::fromJson: невалидный JSON -> исключение');
+    $t->throws(fn() => DnsMessage::fromJson('{"Status":0,"Question":[{"Name":"a.com."}]}'),
+      'DnsMessage::fromJson: вопрос без Type -> исключение');
+  }
+
+  static function testCompress(TestRunner $t)
+  {
+    $resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true));
+    $resp->questions[] = new DnsQuestion('www.example.com', 1);
+    $resp->answers[] = new DnsRecord('www.example.com', 1, 1, 10, new ARecord('192.168.1.1'));
+
+    $compressed = $resp->serializeWith(new NameTable());
+    $t->eq(hexs($compressed),
+      '12 34 80 80 00 01 00 01 00 00 00 00'
+      . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+      . ' C0 0C 00 01 00 01 00 00 00 0A 00 04 C0 A8 01 01',
+      'Сжатие: золотой вектор, имя ответа -> указатель C0 0C');
+
+    // roundtrip: deserialize -> serializeWith воспроизводит те же байты
+    $parsed = DnsMessage::fromReader(DnsReader::of($compressed));
+    $t->eq($parsed->serializeWith(new NameTable()), $compressed, 'Сжатие: roundtrip байт в байт');
+    $t->eq($parsed->answers[0]->name, 'www.example.com', 'Сжатие: имя после roundtrip');
+    $t->eq($parsed->answers[0]->rdata->ip, '192.168.1.1', 'Сжатие: rdata после roundtrip');
+
+    // serialize() без параметров не сжат и не изменился
+    $plain = $resp->serialize();
+    $t->eq(strlen($plain) > strlen($compressed), true, 'Сжатие: serialize() длиннее serializeWith()');
+    $t->eq($plain, $parsed->serialize(), 'Сжатие: serialize() обратно собрал прежние несжатые байты');
+
+    // одиночный запрос без повторов имён: serializeWith == serialize
+    $q = DnsMessage::query('www.example.com', 1);
+    $t->eq($q->serializeWith(new NameTable()), $q->serialize(),
+      'Сжатие: запросу сжимать нечего - байты совпадают');
+
+    /* ---------- Сжатие суффиксов ---------- */
+
+    // "example.com" после "www.example.com" -> указатель на смещение 16 (C0 10)
+    $msg2 = new DnsMessage(new DnsHeader(id: 2, qr: true));
+    $msg2->questions[] = new DnsQuestion('www.example.com', 1);
+    $msg2->answers[] = new DnsRecord('example.com', 1, 1, 10, new ARecord('1.2.3.4'));
+    $c2 = $msg2->serializeWith(new NameTable());
+    $t->eq(substr_count($c2, "\xC0\x10"), 1, 'Сжатие: суффикс имени -> указатель C0 10');
+    $t->eq(DnsMessage::fromReader(DnsReader::of($c2))->answers[0]->name, 'example.com', 'Сжатие: суффикс roundtrip');
+
+    /* ---------- Сжатие внутри RDATA ---------- */
+
+    // CNAME на имя из вопроса
+    $msg3 = new DnsMessage(new DnsHeader(id: 3, qr: true));
+    $msg3->questions[] = new DnsQuestion('example.com', 5);
+    $msg3->answers[] = new DnsRecord('www.example.com', 5, 1, 60, new CnameRecord('example.com'));
+    $c3 = $msg3->serializeWith(new NameTable());
+    $t->eq(substr_count($c3, "\xC0\x0C"), 2, 'Сжатие: указатель внутри RDATA (CNAME)');
+    $p3 = DnsMessage::fromReader(DnsReader::of($c3));
+    $t->eq($p3->answers[0]->rdata->target, 'example.com', 'Сжатие: CNAME target roundtrip');
+
+    // SOA: mname и rname сжимаются на общий суффикс
+    $soaMsg = new DnsMessage(new DnsHeader(id: 6, qr: true));
+    $soaMsg->questions[] = new DnsQuestion('example.com', 6);
+    $soaMsg->answers[] = new DnsRecord('example.com', 6, 1, 3600,
+      new SoaRecord('ns1.example.com', 'admin.example.com', 1, 2, 3, 4, 5));
+    $cs = $soaMsg->serializeWith(new NameTable());
+    // имя записи, mname и rname - три указателя на example.com
+    $t->eq(substr_count($cs, "\xC0\x0C"), 3, 'Сжатие: SOA - три указателя на общий суффикс');
+    $ps = DnsMessage::fromReader(DnsReader::of($cs));
+    $t->eq([$ps->answers[0]->rdata->mname, $ps->answers[0]->rdata->rname],
+      ['ns1.example.com', 'admin.example.com'], 'Сжатие: SOA roundtrip');
+
+    // несжимаемый RDATA (TXT) не ломается рядом со сжатым
+    $txtMsg = new DnsMessage(new DnsHeader(id: 4, qr: true));
+    $txtMsg->questions[] = new DnsQuestion('example.com', 16);
+    $txtMsg->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord(['hello world']));
+    $txtMsg->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord([str_repeat('z', 300)]));
+    $ct = $txtMsg->serializeWith(new NameTable());
+    $pt = DnsMessage::fromReader(DnsReader::of($ct));
+    $t->eq($pt->answers[1]->rdata->texts, [str_repeat('z', 255), str_repeat('z', 300-255)], 'Сжатие: длинный TXT рядом с указателями roundtrip');
+
+    /* ---------- Регистронезависимость ---------- */
+
+    $msg4 = new DnsMessage(new DnsHeader(id: 5, qr: true));
+    $msg4->questions[] = new DnsQuestion('www.example.com', 1);
+    $msg4->answers[] = new DnsRecord('WWW.Example.COM', 1, 1, 10, new ARecord('9.9.9.9'));
+    $c4 = $msg4->serializeWith(new NameTable());
+    $t->eq(substr_count($c4, "\xC0\x0C"), 1, 'Сжатие: регистр не мешает сжатию (RFC 4343)');
+    //$t->eq(DnsMessage::fromReader(DnsReader::of($c4))->answers[0]->name, 'WWW.Example.COM',
+    $t->eq(DnsMessage::fromReader(DnsReader::of($c4))->answers[0]->name, 'www.example.com',
+      'Сжатие: регистр имени сохраняется при сжатии');
+
+    /* ---------- Смещения за границей 0x4000 ---------- */
+
+    // Имена на смещении >= 0x4000 нельзя адресовать указателем - они пишутся литералом
+    $big = new DnsMessage(new DnsHeader(id: 7, qr: true));
+    $big->questions[] = new DnsQuestion('example.com', 16);
+    $big->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord([str_repeat('x', 16500)]));
+    $big->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord([str_repeat('y', 16500)]));
+    $big->answers[] = new DnsRecord('deep.unique.example.org', 16, 1, 60, new TxtRecord(['t1']));
+    $big->answers[] = new DnsRecord('deep.unique.example.org', 16, 1, 60, new TxtRecord(['t2']));
+    $cb = $big->serializeWith(new NameTable());
+    $t->eq(substr_count($cb, "\xC0\x0C"), 2, 'Граница 0x4000: первые два имени сжаты');
+    $t->eq(substr_count($cb, "\x04deep\x06unique\x07example\x03org\0"), 2,
+      'Граница 0x4000: имя за пределами досягаемости указателя пишется литералом дважды');
+    $pb = DnsMessage::fromReader(DnsReader::of($cb));
+    $t->eq(count($pb->answers), 4, 'Граница 0x4000: все четыре записи разобрались');
+
+    /* ---------- OPT через сжатый путь ---------- */
+
+    $qc = DnsMessage::query('a.example.com', 1, dnssec: true);
+    $wireQ = $qc->serializeWith(new NameTable());
+    $pq = DnsMessage::fromReader(DnsReader::of($wireQ));
+    $t->eq(count($pq->additional), 1, 'Сжатие: EDNS OPT присутствует');
+    $t->eq($pq->additional[0]->rdata->do, true, 'Сжатие: флаг DO сохранён');
+    $t->eq($pq->additional[0]->name, '', 'Сжатие: имя OPT - корень');
+
+    /* ---------- Ошибки через сжатый путь ---------- */
+
+    $badName = new DnsMessage(new DnsHeader(id: 8));
+    $badName->questions[] = new DnsQuestion(str_repeat('x', 64), 1);
+    $t->throws(fn() => $badName->serializeWith(new NameTable()),
+      'Сжатие: метка 64 байта через serializeWith -> исключение');
+  }
+
+  static function testWrite(TestRunner $t)
+  {
+    /* ---------- Совместимость: serialize()/serializeWith() дают прежние байты ---------- */
+
+    $resp = new DnsMessage(new DnsHeader(id: 0x1234, qr: true, ra: true));
+    $resp->questions[] = new DnsQuestion('www.example.com', 1);
+    $resp->answers[] = new DnsRecord('www.example.com', 1, 1, 10, new ARecord('192.168.1.1'));
+
+    $t->eq(hexs($resp->serialize()),
+      '12 34 80 80 00 01 00 01 00 00 00 00'
+      . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+      . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01 00 00 00 0A 00 04 C0 A8 01 01',
+      'serialize(): несжатый вывод не изменился');
+
+    $t->eq(hexs($resp->serializeWith(new NameTable())),
+      '12 34 80 80 00 01 00 01 00 00 00 00'
+      . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+      . ' C0 0C 00 01 00 01 00 00 00 0A 00 04 C0 A8 01 01',
+      'serializeWith(): сжатый вывод не изменился');
+
+    // Прямой путь через писателя даёт то же, что serializeWith
+    $w7 = new DnsWriter(new NameTable());
+    $resp->writeTo($w7);
+    $t->eq($w7->data(), $resp->serializeWith(new NameTable()),
+      'writeTo(DnsWriter): байты совпадают с serializeWith');
+
+    // Запрос с EDNS через писателя - прежний золотой вектор
+    $q = DnsMessage::query('www.example.com', 1);
+    $q->header->id = 0x1234;
+    $wq = new DnsWriter();
+    $q->writeTo($wq);
+    $t->eq(hexs($wq->data()),
+      '12 34 01 00 00 01 00 00 00 00 00 01'
+      . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
+      . ' 00 00 29 10 00 00 00 00 00 00 00',
+      'writeTo(DnsWriter): запрос с EDNS - золотой вектор');
+
+    /* ---------- Симметрия: DnsWriter -> DnsReader ---------- */
+
+    // Сложное сообщение со сжатием, SOA и TXT: serialize -> deserialize -> serialize
+    $complex = new DnsMessage(new DnsHeader(id: 42, qr: true, ra: true));
+    $complex->questions[] = new DnsQuestion('example.com', 6);
+    $complex->answers[] = new DnsRecord('example.com', 6, 1, 3600,
+      new SoaRecord('ns1.example.com', 'admin.example.com', 1, 2, 3, 4, 5));
+    $complex->answers[] = new DnsRecord('example.com', 16, 1, 60, new TxtRecord(['приват txt']));
+    $complex->answers[] = new DnsRecord('example.com', 15, 1, 300, new MxRecord(10, 'mail.example.com'));
+
+    $wc = new DnsWriter(new NameTable());
+    $complex->writeTo($wc);
+    $wire = $wc->data();
+
+    $back = DnsMessage::deserialize($wire);
+    $t->eq($back->answers[0]->rdata->mname, 'ns1.example.com', 'Симметрия: SOA mname');
+    $t->eq($back->answers[0]->rdata->serial, 1, 'Симметрия: SOA serial');
+    $t->eq($back->answers[1]->rdata->texts, ['приват txt'], 'Симметрия: TXT');
+    $t->eq($back->answers[2]->rdata->exchange, 'mail.example.com', 'Симметрия: MX');
+
+    $wc2 = new DnsWriter(new NameTable());
+    $back->writeTo($wc2);
+    $t->eq($wc2->data(), $wire, 'Симметрия: повторная запись воспроизводит те же байты');
+  }
 }

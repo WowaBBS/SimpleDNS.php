@@ -59,4 +59,11 @@ final class CaaRecord extends DnsRdata
     return new static((int)$m[1], $m[2], StrCodec::unescape($m[3]));
   }
 //****************************************************************
+
+  static function testJson(TestRunner $t)
+  {
+    // CAA roundtrip
+    $caaJ = CaaRecord::fromJson('0 issue "letsencrypt.org"');
+    $t->eq([$caaJ->flags, $caaJ->tag, $caaJ->value], [0, 'issue', 'letsencrypt.org'], 'CaaRecord::fromJson');
+  }
 }

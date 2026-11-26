@@ -125,6 +125,13 @@ final class DnsWriter
     // Ошибка метки через писателя
     $t->throws(fn() => (new DnsWriter())->writeName(str_repeat('x', 64)),
       'DnsWriter: метка 64 байта -> исключение');
+
+    // tell() по ходу записи корректен
+    $w8 = new DnsWriter();
+    $w8->writeU16(1);
+    $t->eq($w8->tell(), 2, 'DnsWriter: tell после U16');
+    $w8->writeName('example.com');
+    $t->eq($w8->tell(), 2 + 13, 'DnsWriter: tell после имени (2 + 12 + 1)');
     
   }
 }
