@@ -14,9 +14,30 @@ final class JsonReader
 
   public function path(): string { return $this->path; }
 
-  public function has(string $key): bool { return array_key_exists($key, $this->data); }
+  public function has(string $key): bool { return $this->find($key) !== null; }
 
-  public function raw(string $key): mixed { return $this->data[$key] ?? null; }
+  public function raw(string $key): mixed
+  {
+    $found = $this->find($key);
+    return $found === null ? null : $this->data[$found];
+  }
+
+  /**
+   * Поле ищется без учёта регистра: RFC 8427 пишет "Name"/"Type",
+   * а Google /resolve отдаёт "name"/"type" в тех же объектах.
+   */
+  private function find(string $key): ?string
+  {
+    if (array_key_exists($key, $this->data))
+      return $key;
+
+    $lower = strtolower($key);
+    foreach ($this->data as $name => $_)
+      if (strtolower((string)$name) === $lower)
+        return (string)$name;
+
+    return null;
+  }
 
   /* ---------- Обязательные значения ---------- */
 
@@ -39,6 +60,16 @@ final class JsonReader
       return (int)$value;
 
     $this->wrongType($key, 'целое число', $value);
+  }
+
+  /** Строка или целое без приведения: тип записи приходит и как "MX", и как 15 */
+  public function strOrInt(string $key): string|int
+  {
+    $value = $this->required($key);
+    if (is_int($value) || is_string($value))
+      return $value;
+
+    $this->wrongType($key, 'строка или целое', $value);
   }
 
   public function bool(string $key): bool
@@ -97,10 +128,12 @@ final class JsonReader
 
   private function required(string $key): mixed
   {
-    if (!array_key_exists($key, $this->data))
+    $found = $this->find($key);
+
+    if ($found === null)
       throw new RuntimeException("{$this->path}: нет поля $key");
 
-    return $this->data[$key];
+    return $this->data[$found];
   }
 
   private function wrongType(string $key, string $expected, mixed $got): never
@@ -126,6 +159,14 @@ final class JsonReader
     $t->eq($j->intOr('missing', 7), 7, 'JsonReader: intOr по умолчанию');
     $t->eq($j->has('a'), true, 'JsonReader: has');
     $t->eq($j->has('zzz'), false, 'JsonReader: has отсутствующего');
+
+    // Ключи без учёта регистра: так отвечает Google /resolve
+    $lower = new JsonReader(['name' => 'example.com.', 'type' => 1]);
+    $t->eq($lower->str('Name'), 'example.com.', 'JsonReader: поле в нижнем регистре');
+    $t->eq($lower->int('TYPE'), 1, 'JsonReader: int по имени в другом регистре');
+    $t->eq($lower->has('NAME'), true, 'JsonReader: has без учёта регистра');
+    $t->eq($lower->strOrInt('type'), 1, 'JsonReader: strOrInt из числа');
+    $t->eq((new JsonReader(['Type' => 'MX']))->strOrInt('Type'), 'MX', 'JsonReader: strOrInt из строки');
 
     $o = $j->obj('obj');
     $t->eq($o->int('x'), 5, 'JsonReader: вложенный объект');

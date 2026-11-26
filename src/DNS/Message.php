@@ -276,6 +276,13 @@ final class DnsMessage
     $t->eq($g->rcode(), 0, 'Google JSON: rcode без OPT = 0');
 
     // Битый JSON -> исключение
+    // Google /resolve отдаёт ключи в нижнем регистре
+    $gl = '{"Status":0,"TC":false,"RD":true,"RA":true,"Question":[{"name":"example.com.","type":1}],'
+        . '"Answer":[{"name":"example.com.","type":1,"TTL":300,"data":"93.184.216.34"}]}';
+    $google = DnsMessage::fromJson($gl);
+    $t->eq($google->questions[0]->name, 'example.com', 'Google JSON: имя вопроса в нижнем регистре');
+    $t->eq($google->answers[0]->rdata->ip, '93.184.216.34', 'Google JSON: data в нижнем регистре');
+
     $t->throws(fn() => DnsMessage::fromJson('{не json'), 'DnsMessage::fromJson: невалидный JSON -> исключение');
     $t->throws(fn() => DnsMessage::fromJson('{"Status":0,"Question":[{"Name":"a.com."}]}'),
       'DnsMessage::fromJson: вопрос без Type -> исключение');

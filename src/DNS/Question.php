@@ -55,7 +55,7 @@ final class DnsQuestion
   {
     return new self(
       NameCodec  ::fromPresentation($j->str('Name')),
-      DnsMessage ::typeFromName    ($j->str('Type')),
+      DnsMessage ::typeFromName    ((string)$j->strOrInt('Type')),
     );
   }
 //****************************************************************

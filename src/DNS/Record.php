@@ -161,7 +161,7 @@ final class DnsRecord
 
   public static function fromJsonReader(JsonReader $j): self
   {
-    $type  = DnsMessage  ::typeFromName($j->str('Type'));
+    $type  = DnsMessage  ::typeFromName((string)$j->strOrInt('Type'));
     $cls   = RdataRegistry::classFor  ($type);
     $rdata = $cls::fromText($j->str('Data'));
 
