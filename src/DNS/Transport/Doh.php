@@ -5,7 +5,9 @@
 
 final class DohTransport
 {
-  public const ENDPOINT = 'https://dns.google/dns-query'; // или https://cloudflare-dns.com/dns-query
+//public const ENDPOINT = 'https://dns.google/dns-query'; // или https://cloudflare-dns.com/dns-query
+//public const ENDPOINT = 'https://8.8.8.8/dns-query'; // или https://cloudflare-dns.com/dns-query
+  public const ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 
   public static function exchange(DnsMessage $request, int $timeout = 5, bool $compress = false): DnsMessage
   {
@@ -28,7 +30,7 @@ final class DohTransport
     if (!preg_match('/^HTTP\/\S+\s+2\d\d/', $http_response_header[0] ?? ''))
       throw new RuntimeException('DoH-сервер вернул ошибку: ' . ($http_response_header[0] ?? 'нет заголовков'));
     
-    $reply = DnsMessage::deserialize($response);
+    $reply = DnsMessage::fromReader(DnsReader::of($response));
 
     if ($reply->header->id !== $request->header->id)
       throw new RuntimeException('ID ответа не совпадает с ID запроса');

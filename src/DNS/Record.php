@@ -32,7 +32,8 @@ final class DnsRecord
     }
     else
     {
-      [$class, $ttl] = [$this->class, $this->ttl];
+      $class = $this->class ;
+      $ttl   = $this->ttl   ;
     }
 
     $w->pack('nnNn', $this->type, $class, $ttl, 0);
@@ -92,10 +93,7 @@ final class DnsRecord
   }
   
   /** @return array{0:self, 1:int} */
-  public static function deserialize(string $msg, int $off = 0): array
-  {
-    return self::fromReader(DnsReader::of($msg, $off));
-  }
+//public static function deserialize(string $msg, int $off = 0): array { return self::fromReader(DnsReader::of($msg, $off)); }
   
   /** @return array{0:self, 1:int} */
   public static function fromReader(DnsReader $r): array
@@ -138,28 +136,29 @@ final class DnsRecord
       'TTL'  => $this->ttl,
       'Data' => $this->rdata->toJson(),
     ];
-    if ($this->rdata instanceof OptRecord) {
+    if ($this->rdata instanceof OptRecord)
+    {
       // EDNS: свои поля (RFC 8427, 2.4.2)
-      $out['UDPSize'] = $this->rdata->udpSize;
-      $out['ExtRcode'] = $this->rdata->extRcode;
-      $out['Version'] = $this->rdata->version;
-      $out['DO'] = $this->rdata->do;
+      $out['UDPSize'  ] = $this->rdata->udpSize  ;
+      $out['ExtRcode' ] = $this->rdata->extRcode ;
+      $out['Version'  ] = $this->rdata->version  ;
+      $out['DO'       ] = $this->rdata->do       ;
     }
     return $out;
   }
 
   public static function fromJson(array $j): self
   {
-    foreach (['Name', 'Type', 'Data'] as $k) {
-      if (!array_key_exists($k, $j)) {
+    foreach (['Name', 'Type', 'Data'] as $k)
+      if (!array_key_exists($k, $j))
         throw new RuntimeException("В записи нет поля $k");
-      }
-    }
+    
     $type = DnsMessage::typeFromName($j['Type']);
     $cls  = RdataRegistry::classFor($type);
     $rdata = $cls::fromJson($j['Data']);
 
-    if ($type === 41 && $rdata instanceof OptRecord) {
+    if ($type === 41 && $rdata instanceof OptRecord)
+    {
       $rdata->udpSize  = (int)($j['UDPSize'  ] ?? 4096);
       $rdata->extRcode = (int)($j['ExtRcode' ] ?? 0);
       $rdata->version  = (int)($j['Version'  ] ?? 0);

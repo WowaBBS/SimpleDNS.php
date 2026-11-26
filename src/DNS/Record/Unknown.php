@@ -16,7 +16,7 @@ final class UnknownRdata extends DnsRdata
   static function test(TestRunner $t)
   {
     $unk = new UnknownRdata("\xDE\xAD\xBE\xEF");
-    $t->eq(UnknownRdata::deserialize($unk->serialize())->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata: байты сохран€ютс€ как есть');
+    $t->eq(UnknownRdata::fromReader(DnsReader::of($unk->serialize()))->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata: байты сохран€ютс€ как есть');
   }
 
 //****************************************************************

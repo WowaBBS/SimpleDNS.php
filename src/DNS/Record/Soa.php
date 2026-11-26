@@ -51,7 +51,7 @@ final class SoaRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $soa = new SoaRecord('ns1.example.com', 'admin.example.com', 2024010101, 7200, 900, 1209600, 3600);
-    $soa2 = SoaRecord::deserialize($soa->serialize());
+    $soa2 = SoaRecord::fromReader(DnsReader::of($soa->serialize()));
     $t->eq($soa2->serial, 2024010101, 'SoaRecord: roundtrip serial');
     $t->eq($soa2->minimum, 3600, 'SoaRecord: roundtrip minimum');
   }

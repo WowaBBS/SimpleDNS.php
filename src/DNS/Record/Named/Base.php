@@ -36,7 +36,7 @@ abstract class NamedRdata extends DnsRdata
        . "\x07target"         // не важная часть
        . "\xC0\x0C"           // CNAME rdata: указатель на "example.com"
     ;
-    $cname = CnameRecord::deserialize($msg, -2);
+    $cname = CnameRecord::fromReader(DnsReader::of($msg, -2));
     $t->eq($cname->target, 'example.com', 'RdataName: указатель из RDATA в вопрос разрешается');
   }
 

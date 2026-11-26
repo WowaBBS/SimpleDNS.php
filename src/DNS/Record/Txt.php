@@ -39,7 +39,7 @@ final class TxtRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $txt = new TxtRecord(['v=spf1 include:_spf.example.com ~all']);
-    $txt2 = TxtRecord::deserialize($txt->serialize());
+    $txt2 = TxtRecord::fromReader(DnsReader::of($txt->serialize()));
     $t->eq((string)$txt2, 'v=spf1 include:_spf.example.com ~all', 'TxtRecord: roundtrip одной строки');
 
     // TXT длиннее 255 байт: режется на куски, при повторной сериализации байты совпадают

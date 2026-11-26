@@ -39,7 +39,7 @@ final class MxRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $mx = new MxRecord(10, 'mail.example.com');
-    $mx2 = MxRecord::deserialize($mx->serialize());
+    $mx2 = MxRecord::fromReader(DnsReader::of($mx->serialize()));
     $t->eq([$mx2->pref, $mx2->exchange], [10, 'mail.example.com'], 'MxRecord: roundtrip');
   }
 

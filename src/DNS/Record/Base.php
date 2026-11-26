@@ -33,7 +33,6 @@ abstract class DnsRdata
   public static final function deserialize(string $msg, int $off=0, ?int $rdLen=null): static
   {
     $r = DnsReader::of($msg, $off, $rdLen);
-    $start = $r->tell();
     $obj = static::fromReader($r);
     if ($r->remaining() > 0)
       throw new RuntimeException('RDATA прочитано больше, чем заявлено в RDLENGTH');
@@ -57,13 +56,13 @@ abstract class DnsRdata
     /* ---------- RDATA: ридер ловит выход за RDLENGTH ---------- */
     
     // TXT с длиной куска больше rdLen
-    $t->throws(fn() => TxtRecord::deserialize("\xFFhello", 0, 3), 'TxtRecord: кусок за границей rdLen -> исключение');
+    $t->throws(fn() => TxtRecord::fromReader(DnsReader::of("\xFFhello", 0, 3)), 'TxtRecord: кусок за границей rdLen -> исключение');
     
     // A-запись с rdLen=3
-    $t->throws(fn() => ARecord::fromReader(DnsReader::of("\x01\x02\x03"), 3), 'ARecord: rdLen=3 -> исключение');
+    $t->throws(fn() => ARecord::fromReader(DnsReader::of("\x01\x02\x03", 3)), 'ARecord: rdLen=3 -> исключение');
     
     // RDATA, потребившая больше заявленного: MX с rdLen=3, но имя литеральное (больше 1 байта)
-    $t->throws(fn() => MxRecord::deserialize("\x00\x0A\x07example\x03com\x00", 0, 3),
+    $t->throws(fn() => MxRecord::fromReader(DnsReader::of("\x00\x0A\x07example\x03com\x00", 0, 3)),
       'MxRecord: rdata длиннее rdLen -> исключение');
   }
   

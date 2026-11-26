@@ -21,8 +21,8 @@ final class AaaaRecord extends DnsRdata
 
   static function test(TestRunner $t)
   {
-   $t->eq((AaaaRecord::deserialize(inet_pton('2001:db8::1')))->ip, '2001:db8::1', 'AaaaRecord: roundtrip 2001:db8::1');
-   $t->throws(fn() => AaaaRecord::deserialize(inet_pton('2001:db8::1'), 0, 15), 'AaaaRecord: rdLen != 16 -> исключение');
+   $t->eq((AaaaRecord::fromReader(DnsReader::of(inet_pton('2001:db8::1'))))->ip, '2001:db8::1', 'AaaaRecord: roundtrip 2001:db8::1');
+   $t->throws(fn() => AaaaRecord::fromReader(DnsReader::of(inet_pton('2001:db8::1'), 0, -1)), 'AaaaRecord: rdLen != 16 -> исключение');
   }
 
 //****************************************************************

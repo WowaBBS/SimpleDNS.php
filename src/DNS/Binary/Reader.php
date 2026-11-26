@@ -222,7 +222,7 @@ final class DnsReader
     // Возврат на 2 байта назад: 4 (N) - 2 (X2) + 2 (n) = 4 байта
     $t->eq(self::unpackLength('Nfirst/X2/noverlap'), 4, 'unpack back 4'); // int(4)
 
-    // Возврат на 2 байта назад: 4 (N) - 2 (X2) + 2 (n) = 4 байта
+    // Возврат на 2 байта назад:  2 (@2) + 2 (n) = 4 байта
     $t->eq(self::unpackLength('Nfirst/@2/noverlap'), 4, 'unpack 4'); // int(4)
 
     // Неограниченная длина из-за '*'

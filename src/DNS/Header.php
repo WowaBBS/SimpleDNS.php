@@ -59,10 +59,7 @@ final class DnsHeader
     return pack('nnnnnn', $this->id, $flags, $this->qdCount, $this->anCount, $this->nsCount, $this->arCount);
   }
 
-  public static function deserialize(string $buf): self
-  {
-    return self::fromReader(DnsReader::of($buf));
-  }
+//public static function deserialize(string $buf): self { return self::fromReader(DnsReader::of($buf)); }
 
   public static function fromReader(DnsReader $r): self
   {
@@ -97,7 +94,7 @@ final class DnsHeader
     $h = new DnsHeader(id: 0x1235, qr: true, rd: true, rcode: 3);
     $t->eq(hexs($h->serialize()), '12 35 81 03 00 00 00 00 00 00 00 00', 'DnsHeader: точные байты (QR|RD, rcode=3)');
     
-    $h2 = DnsHeader::deserialize($h->serialize());
+    $h2 = DnsHeader::fromReader(DnsReader::of($h->serialize()));
     $t->eq($h2->id    , 0x1235 , 'DnsHeader: roundtrip id');
     $t->eq($h2->qr    , true   , 'DnsHeader: roundtrip qr');
     $t->eq($h2->rd    , true   , 'DnsHeader: roundtrip rd');
@@ -107,7 +104,7 @@ final class DnsHeader
     $t->eq(DnsHeader::rcodeName(0), 'NOERROR'  ,'DnsHeader: rcodeName(0)');
     $t->eq(DnsHeader::rcodeName(3), 'NXDOMAIN' ,'DnsHeader: rcodeName(3)');
     
-    $t->throws(fn() => DnsHeader::deserialize('1235'), 'DnsHeader: буфер < 12 байт -> исключение');
+    $t->throws(fn() => DnsHeader::fromReader(DnsReader::of('1235')), 'DnsHeader: буфер < 12 байт -> исключение');
   }
 
 //****************************************************************

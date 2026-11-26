@@ -29,7 +29,7 @@ final class DnsQuestion
   }
 
   /** @return array{0:self, 1:int} */
-  public static function deserialize(string $msg, int $off): array { return self::fromReader(DnsReader::of($msg, $off)); }
+//public static function deserialize(string $msg, int $off): array { return self::fromReader(DnsReader::of($msg, $off)); }
 
   /** @return array{0:self, 1:int} */
   public static function fromReader(DnsReader $r): array
@@ -45,8 +45,8 @@ final class DnsQuestion
   public function toJson(): array
   {
     return [
-      'Name' => NameCodec::toPresentation($this->name),
-      'Type' => DnsMessage::typeName($this->type),
+      'Name' => NameCodec  ::toPresentation ($this->name),
+      'Type' => DnsMessage ::typeName       ($this->type),
     ];
   }
 

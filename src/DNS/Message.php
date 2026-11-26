@@ -52,11 +52,7 @@ final class DnsMessage
   public function serialize    (                ): string { return new DnsWriter(null  )->writePacket($this)->data(); }
   public function serializeWith(NameTable $table): string { return new DnsWriter($table)->writePacket($this)->data(); }
   
-  public static function deserialize(string $buf): self
-  {
-    $r = DnsReader::of($buf);
-    return self::fromReader($r);
-  }
+//public static function deserialize(string $buf): self { return self::fromReader(DnsReader::of($buf)); }
   
   public static function fromReader(DnsReader $r): self
   {
@@ -160,7 +156,7 @@ final class DnsMessage
     // Запрос: serialize -> deserialize -> serialize, байты совпадают
     $q = DnsMessage::query('www.example.com', 1);
     $wire1 = $q->serialize();
-    $q2 = DnsMessage::deserialize($wire1);
+    $q2 = DnsMessage::fromReader(DnsReader::of($wire1));
     $t->eq($q2->serialize(), $wire1, 'DnsMessage: запрос roundtrip байт в байт');
     $t->eq($q2->header->qdCount, 1, 'DnsMessage: qdCount=1');
     $t->eq($q2->header->arCount, 1, 'DnsMessage: arCount=1 (EDNS)');
@@ -173,7 +169,7 @@ final class DnsMessage
     $resp->answers  [] = new DnsRecord  ('example.com',  5, 1, 300, new CnameRecord('cname.example.com'));
     $resp->answers  [] = new DnsRecord  ('example.com', 16, 1,  60, new TxtRecord(['hello', 'world']));
     $rw = $resp->serialize();
-    $resp2 = DnsMessage::deserialize($rw);
+    $resp2 = DnsMessage::fromReader(DnsReader::of($rw));
     $t->eq($resp2->serialize(), $rw, 'DnsMessage: ответ roundtrip байт в байт');
     $t->eq($resp2->header->anCount, 3, 'DnsMessage: anCount=3');
     $t->eq($resp2->answers[0]->rdata->ip, '93.184.216.34', 'DnsMessage: A-ответ');
@@ -214,7 +210,7 @@ final class DnsMessage
     $respHex = '12 34 81 80 00 01 00 01 00 00 00 00'
          . ' 03 77 77 77 07 65 78 61 6D 70 6C 65 03 63 6F 6D 00 00 01 00 01'
          . ' C0 0C 00 01 00 01 00 00 00 0A 00 04 C0 A8 01 01';
-    $parsed = DnsMessage::deserialize(hex2bin(str_replace(' ', '', $respHex)));
+    $parsed = DnsMessage::fromReader(DnsReader::of(hex2bin(str_replace(' ', '', $respHex))));
     $t->eq($parsed->header->qr, true, 'Вектор ответа: qr=true');
     $t->eq($parsed->answers[0]->name, 'www.example.com', 'Вектор ответа: имя через указатель');
     $t->eq($parsed->answers[0]->rdata->ip, '192.168.1.1', 'Вектор ответа: rdata A-записи');
@@ -222,11 +218,11 @@ final class DnsMessage
   
     /* ---------- Обрезанные данные ---------- */
     
-    $t->throws(fn() => DnsMessage::deserialize(substr($wire1, 0, 5)), 'DnsMessage: обрезанный запрос -> исключение');
+    $t->throws(fn() => DnsMessage::fromReader(DnsReader::of($wire1, 0, 5)), 'DnsMessage: обрезанный запрос -> исключение');
     
     //TODO; It does not work
     $trunc = substr($resp->serialize(), 0, strlen($rw) - 2); // откусили байт rdata
-    $t->throws(fn() => DnsMessage::deserialize($trunc), 'DnsMessage: обрезанный ответ -> исключение');
+    $t->throws(fn() => DnsMessage::fromReader(DnsReader::of($trunc)), 'DnsMessage: обрезанный ответ -> исключение');
 
     /* ---------- DnsMessage::deserialize работает через DnsReader ---------- */
     
@@ -237,18 +233,18 @@ final class DnsMessage
     $wire = $good->serialize();
     
     // обрезаем внутри rdata - должно упасть с исключением, а не вернуть мусор
-    $t->throws(fn() => DnsMessage::deserialize(substr($wire, 0, strlen($wire) - 1)),
+    $t->throws(fn() => DnsMessage::fromReader(DnsReader::of($wire, 0, -1)),
       'deserialize: обрезка последнего байта rdata -> исключение');
     
     // завышенный anCount при реальных двух записях -> исключение, а не чтение за границей
-    $hdr = DnsHeader::deserialize($wire);
+    $hdr = DnsHeader::fromReader(DnsReader::of($wire));
     $hdr->anCount = 5;   // на самом деле запись одна
     $forged = $hdr->serialize() . substr($wire, 12);
-    $t->throws(fn() => DnsMessage::deserialize($forged),
+    $t->throws(fn() => DnsMessage::fromReader(DnsReader::of($forged)),
       'deserialize: завышенный счётчик секции -> исключение');
     
     // хвостовые байты после корректного сообщения допускаются (паддинг)
-    $padded = DnsMessage::deserialize($wire . "\0\0\0\0");
+    $padded = DnsMessage::fromReader(DnsReader::of($wire . "\0\0\0\0"));
     $t->eq($padded->header->id, 1, 'deserialize: хвостовые байты игнорируются');
     
   }

@@ -43,7 +43,7 @@ final class SrvRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $srv = new SrvRecord(1, 5, 5061, 'sip.example.com');
-    $srv2 = SrvRecord::deserialize($srv->serialize());
+    $srv2 = SrvRecord::fromReader(DnsReader::of($srv->serialize()));
     $t->eq([$srv2->priority, $srv2->weight, $srv2->port, $srv2->target], [1, 5, 5061, 'sip.example.com'], 'SrvRecord: roundtrip');
   }
 

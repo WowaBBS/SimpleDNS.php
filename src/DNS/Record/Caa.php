@@ -37,7 +37,7 @@ final class CaaRecord extends DnsRdata
   static function test(TestRunner $t)
   {
     $caa = new CaaRecord(0, 'issue', 'letsencrypt.org');
-    $caa2 = CaaRecord::deserialize($caa->serialize());
+    $caa2 = CaaRecord::fromReader(DnsReader::of($caa->serialize()));
     $t->eq($caa2->flags, 0, 'CaaRecord: roundtrip flags');
     $t->eq($caa2->tag, 'issue', 'CaaRecord: roundtrip tag');
     $t->eq($caa2->value, 'letsencrypt.org', 'CaaRecord: roundtrip value');
