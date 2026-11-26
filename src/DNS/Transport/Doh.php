@@ -1,7 +1,15 @@
 <?
 /* ============================================================
- * DoH (RFC 8484): тот же wire-формат внутри HTTPS.
- * POST - бинарное сообщение, GET - JSON (dns+json).
+ * DoH (RFC 8484): DNS-сообщение внутри HTTPS.
+ *
+ *   exchange()     - POST application/dns-message, основной путь
+ *   exchangeJson() - GET в JSON-представлении, два способа:
+ *     params - ?name=&type=   (Google /resolve, Cloudflare, dns.sb)
+ *     get    - ?dns=<base64url> (RFC 8484; сервер должен уметь JSON)
+ *
+ * Про Accept: серверы ждут application/dns-json (так у Cloudflare
+ * и Google), и Cloudflare отвечает 400 даже на Accept: *\/*,
+ * поэтому заголовок задаётся одним значением.
  * ============================================================ */
 
 final class DohTransport implements DnsTransport
@@ -10,10 +18,18 @@ final class DohTransport implements DnsTransport
 
   public const ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 
+  /** Медиатип, который фактически понимают серверы */
+  public const JSON_ACCEPT = 'application/dns-json';
+
+  /** Способы запросить JSON: параметрами name/type или RFC 8484-строкой */
+  public const JSON_PARAMS = 'params';
+  public const JSON_GET    = 'get';
+
   public function __construct(
     public string $endpoint = self::ENDPOINT,
     public int    $timeout  = 5,
     public bool   $compress = false,
+    public string $jsonMode = self::JSON_PARAMS,
   ) {}
 
   public function name(): string { return $this->endpoint; }
@@ -48,39 +64,38 @@ final class DohTransport implements DnsTransport
     return $this->check($request, $reply);
   }
 
-  /* ---------- GET: application/dns+json ---------- */
+  /* ---------- GET: application/dns-json ---------- */
+
+  /** Адрес JSON-запроса - вынесен отдельно, чтобы его можно было проверить без сети */
+  public function jsonUrl(DnsMessage $request): string
+  {
+    if ($this->jsonMode === self::JSON_GET)
+      return $this->endpoint . '?dns=' . rtrim(strtr(base64_encode($request->serialize()), '+/', '-_'), '=');
+
+    if (count($request->questions) !== 1)
+      throw new RuntimeException($this->name() . ': JSON-режим name/type требует ровно один вопрос');
+
+    $question = $request->questions[0];
+
+    return $this->endpoint . '?' . http_build_query([
+      'name' => $question->name === '' ? '.' : $question->name,
+      'type' => DnsMessage::typeName($question->type),
+    ]);
+  }
 
   public function exchangeJson(DnsMessage $request): DnsMessage
   {
-    $path = parse_url($this->endpoint, PHP_URL_PATH) ?: '';
-
-    if (str_ends_with($path, '/resolve'))
-    {
-      // JSON-API Google: параметры name и type
-      $question = $request->questions[0] ?? throw new RuntimeException('В запросе нет вопросов');
-      $url = $this->endpoint . '?' . http_build_query([
-        'name' => $question->name,
-        'type' => DnsMessage::typeName($question->type),
-      ]);
-    }
-    else
-    {
-      // RFC 8484: wire-запрос в base64url
-      $dns = rtrim(strtr(base64_encode($request->serialize()), '+/', '-_'), '=');
-      $url = $this->endpoint . '?dns=' . $dns;
-    }
-
     $context = stream_context_create([
       'http' => [
         'method'  => 'GET',
-        'header'  => "Accept: application/dns+json\r\n",
+        'header'  => 'Accept: ' . self::JSON_ACCEPT . "\r\n",
         'timeout' => $this->timeout,
         'ignore_errors' => true,
       ],
       'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
     ]);
 
-    $reply = DnsMessage::fromJson($this->fetch($url, $context));
+    $reply = DnsMessage::fromJson($this->fetch($this->jsonUrl($request), $context));
 
     if ($reply->header->tc)
       throw new RuntimeException($this->name() . ': ответ усечён (TC=1)');
@@ -109,11 +124,27 @@ final class DohTransport implements DnsTransport
   {
     $doh = new DohTransport();
     $t->eq($doh->name(), DohTransport::ENDPOINT, 'DohTransport: адрес по умолчанию');
-    $t->eq([$doh->timeout, $doh->compress], [5, false], 'DohTransport: параметры по умолчанию');
+    $t->eq([$doh->timeout, $doh->compress, $doh->jsonMode], [5, false, DohTransport::JSON_PARAMS], 'DohTransport: параметры по умолчанию');
     $t->eq((new DohTransport('https://dns.google/dns-query'))->name(), 'https://dns.google/dns-query', 'DohTransport: свой адрес');
     $t->eq($doh instanceof DnsTransport, true, 'DohTransport: реализует контракт транспорта');
     $t->eq(DohTransport::supportsHttp3(),
       defined('CURL_VERSION_HTTP3') && (bool)(curl_version()['features'] & CURL_VERSION_HTTP3),
       'DohTransport: supportsHttp3 отражает возможности libcurl');
+
+    /* ---------- JSON-запрос: адрес без сети ---------- */
+
+    $query = DnsMessage::query('example.com', 1);
+
+    $t->eq((new DohTransport('https://cf/dns-query'))->jsonUrl($query),
+      'https://cf/dns-query?name=example.com&type=A', 'DohTransport: JSON-URL в режиме name/type');
+
+    $get  = new DohTransport('https://cf/dns-query', jsonMode: DohTransport::JSON_GET);
+    $want = 'https://cf/dns-query?dns=' . rtrim(strtr(base64_encode($query->serialize()), '+/', '-_'), '=');
+    $t->eq($get->jsonUrl($query), $want, 'DohTransport: JSON-URL в режиме ?dns= (base64url без паддинга)');
+
+    $two = DnsMessage::query('example.com', 1);
+    $two->questions[] = new DnsQuestion('example.org', 1);
+    $t->throws(fn() => (new DohTransport('https://cf/dns-query'))->jsonUrl($two),
+      'DohTransport: два вопроса в режиме name/type -> исключение');
   }
 }

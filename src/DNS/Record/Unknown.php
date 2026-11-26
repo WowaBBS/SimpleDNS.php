@@ -36,7 +36,8 @@ final class UnknownRdata extends DnsRdata
   public static function decodeHash(string $data): string
   {
     if (!preg_match('/^\\\\#\s+(\d+)\s*([0-9A-Fa-f]*)$/', trim($data), $m))
-      throw new RuntimeException("Некорректное \\#-представление: $data");
+      throw new RuntimeException('Ожидался формат "\# <длина> <hex>" (RFC 3597), получено: '
+        . mb_substr(trim($data), 0, 40));
     
     $hex = $m[2];
     if ((int)$m[1] !== (int)(strlen($hex) / 2))
