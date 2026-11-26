@@ -165,4 +165,5 @@ final class JsonWriter
 
     // Не-UTF8 строка не превращается в битый JSON
     $t->throws(fn() => JsonStreamSink::encode("\xCF\xF0\xE8"), 'JsonWriter: не-UTF8 строка -> исключение');
-  }}
+  }
+}

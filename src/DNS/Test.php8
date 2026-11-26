@@ -17,6 +17,7 @@ DnsHeader     ::test($t); // заголовок: точные байты и разбор
 DnsMessage    ::test($t); // круговое преобразование и золотые векторы
 DnsMessage    ::testWrite($t);    // serialize()/serializeWith()/writeTo()
 DnsMessage    ::testCompress($t); // сжатие: суффиксы, RDATA, граница 0x4000
+DnsBuilder    ::test($t); // сборка сообщения одним выражением
 
 /* ---------- RDATA ---------- */
 DnsRdata      ::test($t); // типы записей и границы RDATA

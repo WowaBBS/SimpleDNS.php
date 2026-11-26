@@ -56,9 +56,9 @@ final class DnsRecordList extends DnsList
   static function test(TestRunner $t)
   {
     $list = new DnsRecordList();
-    $list[] = new DnsRecord('example.com',      1, 1, 60, new ARecord('1.2.3.4'));
-    $list[] = new DnsRecord('example.com',     16, 1, 60, new TxtRecord(['x']));
-    $list[] = new DnsRecord('www.example.com',  1, 1, 30, new ARecord('5.6.7.8'));
+    $list[] = new DnsRecord('example.com'    , new ARecord('1.2.3.4'), 60);
+    $list[] = new DnsRecord('example.com'    , new TxtRecord(['x'])  , 60);
+    $list[] = new DnsRecord('www.example.com', new ARecord('5.6.7.8'), 30);
 
     $t->eq(count($list->byType(1)), 2, 'DnsRecordList: byType');
     $t->eq(count($list->byName('example.com.')), 2, 'DnsRecordList: byName с точкой');
@@ -69,7 +69,7 @@ final class DnsRecordList extends DnsList
     $t->eq($list->byType(1)->names(), ['example.com', 'www.example.com'], 'DnsRecordList: byType -> names (цепочка)');
     $t->eq($list->opt(), null, 'DnsRecordList: opt отсутствует');
 
-    $list[] = new DnsRecord('', 41, 4096, 0, new OptRecord(1232));
+    $list[] = new DnsRecord('', new OptRecord(1232), 0, 4096);
     $t->eq($list->opt()->udpSize, 1232, 'DnsRecordList: opt находит EDNS-запись');
     $t->eq($list->opt() instanceof OptRecord, true, 'DnsRecordList: opt возвращает OptRecord');
   }

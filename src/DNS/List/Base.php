@@ -190,7 +190,7 @@ abstract class DnsList implements ArrayAccess, Countable, IteratorAggregate, Jso
     $t->eq($names, ['a.example.com', 'b.example.com'], 'DnsList: foreach по элементам');
 
     // Тип элемента проверяется на любом входе
-    $t->throws(fn() => $list->add(new DnsRecord('x.example.com', 1)), 'DnsList: элемент чужого типа -> исключение');
+    $t->throws(fn() => $list->add(new DnsRecord('x.example.com', new ARecord('1.2.3.4'))), 'DnsList: элемент чужого типа -> исключение');
     $t->throws(fn() => $list->add('строка'), 'DnsList: не объект -> исключение');
     $t->throws(fn() => $list[5] = $q1, 'DnsList: индекс за границей -> исключение');
     $t->throws(fn() => $list['a'] = $q1, 'DnsList: нецелый индекс -> исключение');

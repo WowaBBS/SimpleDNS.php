@@ -6,18 +6,29 @@
 final class DnsRecord
 {
   use JsonPacket;
+  /** Код типа выводится из класса RDATA; явно задаётся только для UnknownRdata */
+  public int $type;
+
   public function __construct(
-    public string    $name  ,
-    public int       $type  ,
-    public int       $class = 1,
-    public int       $ttl   = 0,
-    public ?DnsRdata $rdata = null,
-  ) {}
+    public string   $name ,
+    public DnsRdata $rdata,
+    public int      $ttl   = 0,
+    public int      $class = 1,
+    ?int            $type  = null,
+  ) {
+    $type ??= RdataRegistry::typeFor($rdata::class)
+      ?? throw new InvalidArgumentException('Для UnknownRdata код типа нужно задать явно');
+
+    if (RdataRegistry::classFor($type) !== $rdata::class)
+      throw new InvalidArgumentException(sprintf('Тип %d не соответствует %s', $type, $rdata::class));
+
+    $this->type = $type;
+  }
 
   /** Фабрика OPT-записи для EDNS0 */
   public static function opt(int $udpSize = 4096, bool $dnssec = false): self
   {
-    return new self('', 41, $udpSize, 0, new OptRecord($udpSize, do: $dnssec));
+    return new self('', new OptRecord($udpSize, do: $dnssec), 0, $udpSize);
   }
 
   public function writeTo(DnsWriter $w): void
@@ -41,14 +52,14 @@ final class DnsRecord
 
     $lenOff = $w->tell();    // здесь будет RDLENGTH
 
-    $this->rdata?->writeTo($w);
+    $this->rdata->writeTo($w);
 
     $w->writeU16At($lenOff-2, $w->tell() - $lenOff); // латаем реальной длиной
   }
   
   public function serialize(): string
   {
-    $rdata = $this->rdata?->serialize() ?? '';
+    $rdata = $this->rdata->serialize();
 
     // у OPT класс-поле несёт UDP-размер, TTL - extRcode/version/DO
     $class = $this->class;
@@ -88,7 +99,7 @@ final class DnsRecord
     $lenPos = strlen($buf) + 8;         // где будет RDLENGTH
     $buf .= pack('nnN', $this->type, $class, $ttl) . "\0\0";
 
-    $this->rdata?->serializeWith($table, $buf); // RDATA - сразу в общий буфер
+    $this->rdata->serializeWith($table, $buf); // RDATA - сразу в общий буфер
 
     $buf = substr_replace($buf, pack('n', strlen($buf) - $lenPos - 2), $lenPos, 2);
   }
@@ -105,9 +116,9 @@ final class DnsRecord
     $start = $r->tell();
     $rdata = RdataRegistry::classFor($type)::fromReader($r->sub($rdLen));
     if ($r->tell() - $start > $rdLen)
-      throw new RuntimeException('RDATA типа $type прочитано больше заявленной длины');
+      throw new RuntimeException("RDATA типа $type прочитано больше заявленной длины");
     
-    $record = new self($name, $type, $class, $ttl, $rdata);
+    $record = new self($name, $rdata, $ttl, $class, $type);
 
     if ($type === 41 && $rdata instanceof OptRecord)
     {
@@ -135,7 +146,7 @@ final class DnsRecord
     $w->put('Name', NameCodec  ::toPresentation($this->name));
     $w->put('Type', DnsMessage ::typeName      ($this->type));
     $w->put('TTL' , $this->ttl);
-    $w->put('Data', $this->rdata?->toText() ?? '');
+    $w->put('Data', $this->rdata->toText());
 
     if ($this->rdata instanceof OptRecord)
     {
@@ -164,10 +175,10 @@ final class DnsRecord
 
     return new self(
       NameCodec::fromPresentation($j->str('Name')),
-      $type,
-      $j->intOr('Class', 1),
-      $j->intOr('TTL'  , 0),
       $rdata,
+      $j->intOr('TTL'  , 0),
+      $j->intOr('Class', 1),
+      $type,
     );
   }
 //****************************************************************
@@ -176,7 +187,7 @@ final class DnsRecord
   {
     /* ---------- JSON: запись целиком ---------- */
 
-    $a = new DnsRecord('example.com', 1, 1, 300, new ARecord('93.184.216.34'));
+    $a = new DnsRecord('example.com', new ARecord('93.184.216.34'), 300);
     $aj = $a->toJson();
     $t->eq($aj, ['Name' => 'example.com.', 'Type' => 'A', 'TTL' => 300, 'Data' => '93.184.216.34'],
       'DnsRecord->toJson: точная структура');

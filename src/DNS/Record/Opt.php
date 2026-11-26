@@ -38,7 +38,7 @@ final class OptRecord extends DnsRdata
     
     // Расширенный rcode: extRcode=1 (BADVERS), header rcode=0 -> итог 16
     $m = new DnsMessage(new DnsHeader(id: 1));
-    $m->additional[] = new DnsRecord('', 41, 4096, 0, new OptRecord(4096, 1, 0, false));
+    $m->additional[] = new DnsRecord('', new OptRecord(4096, 1, 0, false), 0, 4096);
     $t->eq($m->rcode(), 16, 'DnsMessage::rcode(): расширение через EDNS');
   }
 
