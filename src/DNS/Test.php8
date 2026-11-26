@@ -24,6 +24,11 @@ NamedRdata    ::test($t); // имена внутри RDATA с указателями
 OptRecord     ::test($t); // OPT / EDNS
 RdataRegistry ::test($t); // реестр типов
 
+/* ---------- Секции-списки ---------- */
+DnsList        ::test($t); // поведение массива, бинарная и JSON-секция
+DnsQuestionList::test($t); // выборки по вопросам
+DnsRecordList  ::test($t); // выборки по записям, OPT
+
 /* ---------- JSON-слой ---------- */
 JsonReader    ::test($t); // чтение: типы, пути, значения по умолчанию
 JsonWriter    ::test($t); // запись: запятые, пустые контейнеры, поток

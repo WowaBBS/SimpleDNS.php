@@ -17,11 +17,11 @@ final class DnsMessage
   public const CLASS_IN = 1;
 
   public function __construct(
-    public DnsHeader $header = new DnsHeader(),
-    /** @var DnsQuestion[] */ public array $questions  = [],
-    /** @var DnsRecord[]   */ public array $answers    = [],
-    /** @var DnsRecord[]   */ public array $authority  = [],
-    /** @var DnsRecord[]   */ public array $additional = [],
+    public DnsHeader       $header     = new DnsHeader()       ,
+    public DnsQuestionList $questions  = new DnsQuestionList() ,
+    public DnsRecordList   $answers    = new DnsRecordList()   ,
+    public DnsRecordList   $authority  = new DnsRecordList()   ,
+    public DnsRecordList   $additional = new DnsRecordList()   ,
   ) {}
 
   /** Готовый запрос: RD=1, один вопрос, EDNS0 OPT */
@@ -42,12 +42,13 @@ final class DnsMessage
     $this->header->arCount = count($this->additional );
 
     $this->header->writeTo($w);
-    foreach ($this->questions as $q)
-      $q->writeTo($w);
+
+    // списки знают, как писать свою секцию
+    $this->questions->writeTo($w);
     
-    foreach ([$this->answers, $this->authority, $this->additional] as $section)
-      foreach ($section as $record)
-        $record->writeTo($w);
+    $this->answers   ->writeTo($w);
+    $this->authority ->writeTo($w);
+    $this->additional->writeTo($w);
     
     return $w->data();
   }
@@ -60,32 +61,23 @@ final class DnsMessage
   {
     $header = DnsHeader::fromReader($r);
 
-    $questions = [];
-    for ($i = 0; $i < $header->qdCount; $i++)
-    {
-      [$question] = DnsQuestion::fromReader($r);
-      $questions[] = $question;
-    }
+    // порядок важен: все фабрики читают из одного и того же ридера
+    $questions  = DnsQuestionList::fromReader($r, $header->qdCount);
+    $answers    = DnsRecordList  ::fromReader($r, $header->anCount);
+    $authority  = DnsRecordList  ::fromReader($r, $header->nsCount);
+    $additional = DnsRecordList  ::fromReader($r, $header->arCount);
 
-    $sections = ['answers' => [], 'authority' => [], 'additional' => []];
-    foreach (['answers' => $header->anCount, 'authority' => $header->nsCount, 'additional' => $header->arCount] as $key => $count)
-      for ($i = 0; $i < $count; $i++)
-      {
-        [$record] = DnsRecord::fromReader($r);
-        $sections[$key][] = $record;
-      }
-
-    return new self($header, $questions, $sections['answers'], $sections['authority'], $sections['additional']);
+    return new self($header, $questions, $answers, $authority, $additional);
   }
 
   /** Полный rcode с учётом старших 8 бит из OPT (EDNS) */
   public function rcode(): int
   {
-    foreach ($this->additional as $r)
-      if ($r->rdata instanceof OptRecord)
-        return ($r->rdata->extRcode << 4) | $this->header->rcode;
-    
-    return $this->header->rcode;
+    $opt = $this->additional->opt();
+
+    return $opt === null
+      ? $this->header->rcode
+      : ($opt->extRcode << 4) | $this->header->rcode;
   }
 
   public static function typeName(int $type): string
@@ -117,33 +109,26 @@ final class DnsMessage
     $w->openObject();
     $this->header->writeJsonFields($w);
 
-    $this->writeJsonSection($w, 'Question'  , $this->questions );
-    $this->writeJsonSection($w, 'Answer'    , $this->answers   );
-    $this->writeJsonSection($w, 'Authority' , $this->authority );
-    $this->writeJsonSection($w, 'Additional', $this->additional);
+    $this->questions ->writeJsonTo($w, 'Question'  );
+    $this->answers   ->writeJsonTo($w, 'Answer'    );
+    $this->authority ->writeJsonTo($w, 'Authority' );
+    $this->additional->writeJsonTo($w, 'Additional');
 
     $w->close();
   }
 
   /** @param array $items объекты с методом writeToJson() */
-  private function writeJsonSection(JsonWriter $w, string $key, array $items): void
-  {
-    $w->openList($key);
-    foreach ($items as $item)
-      $item->writeToJson($w);
-    $w->close();
-  }
+
 
   public static function fromJsonReader(JsonReader $j): self
   {
-    $m = new self(DnsHeader::fromJsonReader($j));
-
-    foreach ($j->list('Question')   as $item) $m->questions  [] = DnsQuestion ::fromJsonReader($item);
-    foreach ($j->list('Answer')     as $item) $m->answers    [] = DnsRecord   ::fromJsonReader($item);
-    foreach ($j->list('Authority')  as $item) $m->authority  [] = DnsRecord   ::fromJsonReader($item);
-    foreach ($j->list('Additional') as $item) $m->additional [] = DnsRecord   ::fromJsonReader($item);
-
-    return $m;
+    return new self(
+      DnsHeader::fromJsonReader($j),
+      DnsQuestionList::fromJsonReader($j, 'Question'  ),
+      DnsRecordList  ::fromJsonReader($j, 'Answer'    ),
+      DnsRecordList  ::fromJsonReader($j, 'Authority' ),
+      DnsRecordList  ::fromJsonReader($j, 'Additional'),
+    );
   }
 //****************************************************************
 // Tests
