@@ -1,0 +1,139 @@
+<?
+include_once '../_Cli.php' ;
+include_once '_All.php';
+
+/* ============================================================
+ * »нвентарь имЄн, которые видно с этой машины:
+ *   mDNS  - сервисы и хосты в .local (RFC 6762)
+ *   NBNS  - NetBIOS-имена известных адресов (NBSTAT, RFC 1002)
+ *   DNS   - обратные PTR-запросы дл€ найденных адресов
+ *   LLMNR - попытка разрешить имена хостов из mDNS (RFC 4795)
+ *
+ * »сточники дополн€ют друг друга: mDNS даЄт адреса и имена,
+ * NBNS и PTR - имена дл€ этих адресов, LLMNR - то, что не
+ * попало ни туда, ни туда.
+ * ============================================================ */
+
+$mdns  = new MdnsTransport(timeout: 1);
+$llmnr = new LlmnrTransport(timeout: 1);
+$nbns  = new NbnsClient   (timeout: 1);
+$dns   = new UdpTransport ('1.1.1.1', 53, 2);
+
+$found = [];   // ip => [источник => [подписи]]
+$hosts = [];   // хостнеймы из mDNS дл€ LLMNR
+
+function note(array &$found, string $ip, string $source, string $label): void
+{
+  $found[$ip][$source] ??= [];
+
+  if (!in_array($label, $found[$ip][$source], true))
+    $found[$ip][$source][] = $label;
+}
+
+/* ---------- 1. —во€ машина ---------- */
+
+$self = gethostname();
+
+foreach (gethostbynamel($self) ?: [] as $ip)
+  if (!str_starts_with($ip, '127.'))
+    note($found, $ip, 'host', $self);
+
+/* ---------- 2. mDNS: типы сервисов -> экземпл€ры -> адреса ---------- */
+
+$types = [];
+
+try
+{
+  foreach ($mdns->ask('_services._dns-sd._udp.local', 12)->answers->byType(12) as $ptr)
+    $types[] = $ptr->rdata->target;
+}
+catch (Throwable) { /* никто не ответил */ }
+
+foreach (array_unique($types) as $type)
+{
+  try { $reply = $mdns->ask($type, 12); }
+  catch (Throwable) { continue; }
+
+  foreach ($reply->answers->byType(12) as $ptr)
+  {
+    $instance = $ptr->rdata->target;
+    $service  = $reply->additional->find($instance, 33);
+
+    if ($service === null)
+      continue;
+
+    $target = $service->rdata->target;
+    $hosts[] = $target;
+
+    foreach ($reply->additional->byType(1) as $address)
+      if (strcasecmp($address->name, $target) === 0)
+        note($found, $address->rdata->ip, 'mDNS', $instance);
+  }
+}
+
+// »м€ самой машины в .local
+try
+{
+  foreach ($mdns->ask("$self.local", 1)->answers->byType(1) as $address)
+    note($found, $address->rdata->ip, 'mDNS', "$self.local");
+}
+catch (Throwable) {}
+
+/* ---------- 3. NBNS: NetBIOS-имена дл€ найденных адресов ---------- */
+
+foreach (array_keys($found) as $ip)
+{
+  try
+  {
+    foreach ($nbns->stat($ip) as $name)
+      note($found, $ip, 'NBNS', sprintf('%s<%02X>', $name['name'], $name['suffix']));
+  }
+  catch (Throwable) { /* хост не говорит NBNS */ }
+}
+
+/* ---------- 4. DNS: обратные PTR ---------- */
+
+foreach (array_keys($found) as $ip)
+{
+  if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4))
+    continue;
+
+  $reverse = implode('.', array_reverse(explode('.', $ip))) . '.in-addr.arpa';
+
+  try
+  {
+    foreach ($dns->exchange(DnsMessage::query($reverse, 12))->answers->byType(12) as $ptr)
+      note($found, $ip, 'DNS', $ptr->rdata->target);
+  }
+  catch (Throwable) { /* нет PTR или нет сети */ }
+}
+
+/* ---------- 5. LLMNR: имена хостов, которые не разрешились ---------- */
+
+foreach (array_unique($hosts) as $host)
+{
+  $name = explode('.', $host)[0];
+
+  try
+  {
+    foreach ($llmnr->ask($name, 1)->answers->byType(1) as $address)
+      note($found, $address->rdata->ip, 'LLMNR', $name);
+  }
+  catch (Throwable) { /* LLMNR в сети молчит */ }
+}
+
+/* ---------- ¬ывод ---------- */
+
+ksort($found);
+
+printf("сво€ машина: %s\n", $self);
+printf("адресов в инвентаре: %d\n", count($found));
+
+foreach ($found as $ip => $sources)
+{
+  echo "\n", $ip, "\n";
+
+  foreach (['host', 'mDNS', 'NBNS', 'DNS', 'LLMNR'] as $source)
+    if (!empty($sources[$source]))
+      printf("  %-5s %s\n", $source . ':', implode(', ', $sources[$source]));
+}
