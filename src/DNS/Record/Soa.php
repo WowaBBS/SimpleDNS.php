@@ -59,7 +59,7 @@ final class SoaRecord extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string
+  public function toText(): string
   {
     return implode(' ', [
       NameCodec::toPresentation($this->mname),
@@ -68,7 +68,7 @@ final class SoaRecord extends DnsRdata
     ]);
   }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     $p = preg_split('/\s+/', trim($data));
     if (count($p) !== 7) {

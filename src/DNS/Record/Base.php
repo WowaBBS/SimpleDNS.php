@@ -70,10 +70,10 @@ abstract class DnsRdata
 // Json
   
   /** RDATA в презентационном формате (RFC 8427, поле Data) */
-  abstract public function toJson(): string;
+  abstract public function toText(): string;
 
   /** Сборка RDATA из презентационного формата */
-  abstract public static function fromJson(string $data): static;
+  abstract public static function fromText(string $data): static;
   
 //****************************************************************
 
@@ -88,8 +88,8 @@ abstract class DnsRdata
        'ns1.example.com. admin.example.com. 2024010101 7200 900 1209600 3600'],
       [new SrvRecord(1, 5, 5061, 'sip.example.com'), '1 5 5061 sip.example.com.'],
     ] as [$rec, $want]) {
-      $t->eq($rec->toJson(), $want, 'Rdata->toJson: ' . (string)$rec);
-      $clone = $rec::fromJson($want);
+      $t->eq($rec->toText(), $want, 'Rdata->toText: ' . (string)$rec);
+      $clone = $rec::fromText($want);
       $t->eq($clone->serialize(), $rec->serialize(), 'Rdata JSON roundtrip (байты): ' . (string)$rec);
     }
   }

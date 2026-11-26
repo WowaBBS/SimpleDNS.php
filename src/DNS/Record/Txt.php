@@ -60,7 +60,7 @@ final class TxtRecord extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string
+  public function toText(): string
   {
     $parts = [];
     foreach ($this->texts as $t) {
@@ -69,7 +69,7 @@ final class TxtRecord extends DnsRdata
     return implode(' ', $parts);
   }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     if (!preg_match_all('/"((?:[^"\\\\]|\\\\.)*)"/', $data, $m))
       throw new RuntimeException("Некорректный TXT: $data");
@@ -83,12 +83,12 @@ final class TxtRecord extends DnsRdata
   {
     // TXT с кавычками и обратным слэшем: экранирование и возврат
     $txtTricky = new TxtRecord(['say "hi"', 'back\\slash']);
-    $json = $txtTricky->toJson();
-    $t->eq($json, '"say \\"hi\\"" "back\\\\slash"', 'TxtRecord->toJson: экранирование');
-    $t->eq(TxtRecord::fromJson($json)->texts, $txtTricky->texts, 'TxtRecord JSON roundtrip с экранированием');
+    $json = $txtTricky->toText();
+    $t->eq($json, '"say \\"hi\\"" "back\\\\slash"', 'TxtRecord->toText: экранирование');
+    $t->eq(TxtRecord::fromText($json)->texts, $txtTricky->texts, 'TxtRecord JSON roundtrip с экранированием');
 
     // TXT из JSON реального вида (несколько строк)
-    $txtBack = TxtRecord::fromJson('"part1" "part2"');
-    $t->eq($txtBack->texts, ['part1', 'part2'], 'TxtRecord::fromJson: две строки');
+    $txtBack = TxtRecord::fromText('"part1" "part2"');
+    $t->eq($txtBack->texts, ['part1', 'part2'], 'TxtRecord::fromText: две строки');
   }
 }

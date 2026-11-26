@@ -5,6 +5,7 @@
 
 final class DnsRecord
 {
+  use JsonPacket;
   public function __construct(
     public string    $name  ,
     public int       $type  ,
@@ -128,52 +129,47 @@ final class DnsRecord
 //****************************************************************
 // Json
 
-  public function toJson(): array
+  public function writeToJson(JsonWriter $w): void
   {
-    $out = [
-      'Name' => NameCodec::toPresentation($this->name),
-      'Type' => DnsMessage::typeName($this->type),
-      'TTL'  => $this->ttl,
-      'Data' => $this->rdata->toJson(),
-    ];
+    $w->openObject();
+    $w->put('Name', NameCodec  ::toPresentation($this->name));
+    $w->put('Type', DnsMessage ::typeName      ($this->type));
+    $w->put('TTL' , $this->ttl);
+    $w->put('Data', $this->rdata?->toText() ?? '');
+
     if ($this->rdata instanceof OptRecord)
     {
-      // EDNS: свои поля (RFC 8427, 2.4.2)
-      $out['UDPSize'  ] = $this->rdata->udpSize  ;
-      $out['ExtRcode' ] = $this->rdata->extRcode ;
-      $out['Version'  ] = $this->rdata->version  ;
-      $out['DO'       ] = $this->rdata->do       ;
+      // EDNS: свои поля (RFC 8427, 2.4.2)
+      $w->put('UDPSize' , $this->rdata->udpSize  );
+      $w->put('ExtRcode', $this->rdata->extRcode );
+      $w->put('Version' , $this->rdata->version  );
+      $w->put('DO'      , $this->rdata->do       );
     }
-    return $out;
+    $w->close();
   }
 
-  public static function fromJson(array $j): self
+  public static function fromJsonReader(JsonReader $j): self
   {
-    foreach (['Name', 'Type', 'Data'] as $k)
-      if (!array_key_exists($k, $j))
-        throw new RuntimeException("В записи нет поля $k");
-    
-    $type = DnsMessage::typeFromName($j['Type']);
-    $cls  = RdataRegistry::classFor($type);
-    $rdata = $cls::fromJson($j['Data']);
+    $type  = DnsMessage  ::typeFromName($j->str('Type'));
+    $cls   = RdataRegistry::classFor  ($type);
+    $rdata = $cls::fromText($j->str('Data'));
 
     if ($type === 41 && $rdata instanceof OptRecord)
     {
-      $rdata->udpSize  = (int)($j['UDPSize'  ] ?? 4096);
-      $rdata->extRcode = (int)($j['ExtRcode' ] ?? 0);
-      $rdata->version  = (int)($j['Version'  ] ?? 0);
-      $rdata->do       = (bool)($j['DO'      ] ?? false);
+      $rdata->udpSize  = $j->intOr ('UDPSize' , 4096 );
+      $rdata->extRcode = $j->intOr ('ExtRcode', 0    );
+      $rdata->version  = $j->intOr ('Version' , 0    );
+      $rdata->do       = $j->boolOr('DO'      , false);
     }
 
     return new self(
-      NameCodec::fromPresentation($j['Name']),
+      NameCodec::fromPresentation($j->str('Name')),
       $type,
-      (int)($j['Class'] ?? 1),
-      (int)($j['TTL'] ?? 0),
+      $j->intOr('Class', 1),
+      $j->intOr('TTL'  , 0),
       $rdata,
     );
   }
-  
 //****************************************************************
 
   static function testJson(TestRunner $t)

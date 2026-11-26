@@ -7,6 +7,7 @@
 final class DnsMessage
 {
   use Packet; // deserialize(string $msg, int $off = 0, ?int $rdLen = null): static
+  use JsonPacket;
 
   private const TYPE_NAMES = [
     1 => 'A', 2 => 'NS', 5 => 'CNAME', 6 => 'SOA', 12 => 'PTR',
@@ -111,44 +112,39 @@ final class DnsMessage
     throw new RuntimeException("Неизвестный тип: $name");
   }
 
-  public function toJson(): array
+  public function writeToJson(JsonWriter $w): void
   {
-    $out = $this->header->toJson();
-    foreach (['Question' => $this->questions, 'Answer' => $this->answers,
-          'Authority' => $this->authority, 'Additional' => $this->additional] as $key => $section) {
-      if ($section !== []) {
-        $out[$key] = array_map(fn($x) => $x->toJson(), $section);
-      }
-    }
-    return $out;
+    $w->openObject();
+    $this->header->writeJsonFields($w);
+
+    $this->writeJsonSection($w, 'Question'  , $this->questions );
+    $this->writeJsonSection($w, 'Answer'    , $this->answers   );
+    $this->writeJsonSection($w, 'Authority' , $this->authority );
+    $this->writeJsonSection($w, 'Additional', $this->additional);
+
+    $w->close();
   }
 
-  public static function fromJson(string $json): self
+  /** @param array $items объекты с методом writeToJson() */
+  private function writeJsonSection(JsonWriter $w, string $key, array $items): void
   {
-    $j = json_decode($json, true);
-    if (!is_array($j)) {
-      throw new RuntimeException('Не удалось разобрать JSON: ' . json_last_error_msg());
-    }
+    $w->openList($key);
+    foreach ($items as $item)
+      $item->writeToJson($w);
+    $w->close();
+  }
 
-    $m = new self(DnsHeader::fromJson($j));
+  public static function fromJsonReader(JsonReader $j): self
+  {
+    $m = new self(DnsHeader::fromJsonReader($j));
 
-    foreach ([
-      'Question'   => &$m->questions  ,
-      'Answer'     => &$m->answers    ,
-      'Authority'  => &$m->authority  ,
-      'Additional' => &$m->additional ,
-    ] as $key => &$section) {
-      foreach ($j[$key] ?? [] as $item) {
-        $section[] = is_array($item)
-          ? ($key === 'Question' ? DnsQuestion::fromJson($item) : DnsRecord::fromJson($item))
-          : throw new RuntimeException("Некорректный элемент в $key");
-      }
-    }
-    unset($section);
+    foreach ($j->list('Question')   as $item) $m->questions  [] = DnsQuestion ::fromJsonReader($item);
+    foreach ($j->list('Answer')     as $item) $m->answers    [] = DnsRecord   ::fromJsonReader($item);
+    foreach ($j->list('Authority')  as $item) $m->authority  [] = DnsRecord   ::fromJsonReader($item);
+    foreach ($j->list('Additional') as $item) $m->additional [] = DnsRecord   ::fromJsonReader($item);
 
     return $m;
   }
-
 //****************************************************************
 // Tests
 
@@ -299,6 +295,55 @@ final class DnsMessage
     $t->throws(fn() => DnsMessage::fromJson('{не json'), 'DnsMessage::fromJson: невалидный JSON -> исключение');
     $t->throws(fn() => DnsMessage::fromJson('{"Status":0,"Question":[{"Name":"a.com."}]}'),
       'DnsMessage::fromJson: вопрос без Type -> исключение');
+
+    /* ---------- Три пути записи JSON дают одно и то же ---------- */
+
+    $t->eq($m->toJsonString(), json_encode($m->toJson(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+      'DnsMessage JSON: строка совпадает с массивом');
+
+    $fp = fopen('php://memory', 'w+');
+    $m->toJsonStream($fp);
+    rewind($fp);
+    $t->eq(stream_get_contents($fp), $m->toJsonString(), 'DnsMessage JSON: поток совпадает со строкой');
+    fclose($fp);
+
+    /* ---------- JSON -> wire: каноническое представление по типам ---------- */
+
+    foreach ([
+      [1,   new ARecord     ('1.2.3.4')],
+      [28,  new AaaaRecord  ('2001:db8::1')],
+      [5,   new CnameRecord ('c.example.com')],
+      [2,   new NsRecord    ('ns.example.com')],
+      [12,  new PtrRecord   ('p.example.com')],
+      [15,  new MxRecord    (10, 'mail.example.com')],
+      [16,  new TxtRecord   (['hello', 'world'])],
+      [6,   new SoaRecord   ('ns.example.com', 'admin.example.com', 1, 2, 3, 4, 5)],
+      [33,  new SrvRecord   (1, 5, 5061, 'sip.example.com')],
+      [257, new CaaRecord   (0, 'issue', 'letsencrypt.org')],
+      [999, new UnknownRdata("\xDE\xAD\xBE\xEF")],
+    ] as [$type, $rdata])
+    {
+      $rec  = new DnsRecord('example.com', $type, 1, 60, $rdata);
+      $back = DnsRecord::fromJson($rec->toJson());
+      $name = DnsMessage::typeName($type);
+
+      $t->eq($back->toJson(), $rec->toJson(), "JSON roundtrip канонического вида: $name");
+        $t->eq($back->serialize(), $rec->serialize(), "JSON -> wire байт-в-байт: $name");
+    }
+
+    // Сообщение целиком: JSON -> wire совпадает с исходным
+    $t->eq(DnsMessage::fromJson($j)->serialize(), $resp->serialize(),
+      'DnsMessage JSON: wire байт-в-байт после roundtrip');
+
+    // Пустые секции в JSON не появляются и не мешают разбору
+    $onlyQ = new DnsMessage(new DnsHeader(id: 7));
+    $onlyQ->questions[] = new DnsQuestion('example.com', 1);
+    $t->eq($onlyQ->toJson(), ['ID'=>7, 'QR'=>false, 'OpCode'=>0, 'AA'=>false, 'TC'=>false, 'RD'=>false,
+      'RA'=>false, 'Z'=>false, 'AD'=>false, 'CD'=>false, 'Status'=>0,
+      'Question'=>[['Name'=>'example.com.', 'Type'=>'A']]],
+      'DnsMessage JSON: пустые секции пропущены');
+    $t->eq(count(DnsMessage::fromJson($onlyQ->toJsonString())->answers), 0,
+      'DnsMessage JSON: отсутствующие секции читаются как пустые');
   }
 
   static function testCompress(TestRunner $t)

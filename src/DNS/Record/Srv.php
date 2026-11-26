@@ -50,14 +50,14 @@ final class SrvRecord extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string
+  public function toText(): string
   {
     return sprintf('%d %d %d %s',
       $this->priority, $this->weight, $this->port,
       NameCodec::toPresentation($this->target));
   }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     $p = preg_split('/\s+/', trim($data));
     if (count($p) !== 4)

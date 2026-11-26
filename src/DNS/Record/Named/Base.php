@@ -43,12 +43,12 @@ abstract class NamedRdata extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string
+  public function toText(): string
   {
     return NameCodec::toPresentation($this->target);
   }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     return new static(NameCodec::fromPresentation(trim($data)));
   }

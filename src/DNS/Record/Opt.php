@@ -45,12 +45,12 @@ final class OptRecord extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string
+  public function toText(): string
   {
     return $this->options === '' ? "\# 0" : "\# " . strlen($this->options) . ' ' . strtoupper(bin2hex($this->options));
   }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     return new static(options: UnknownRdata::decodeHash($data));
   }

@@ -22,12 +22,12 @@ final class UnknownRdata extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string
+  public function toText(): string
   {
     return $this->raw === '' ? "\# 0" : "\# " . strlen($this->raw) . ' ' . strtoupper(bin2hex($this->raw));
   }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     return new static(self::decodeHash($data));
   }
@@ -50,9 +50,9 @@ final class UnknownRdata extends DnsRdata
   static function testJson(TestRunner $t)
   {
     // Неизвестный тип через \#
-    $unkBack = UnknownRdata::fromJson("\# 4 DEADBEEF");
-    $t->eq($unkBack->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata::fromJson: \\#-формат');
-    $t->eq($unkBack->toJson(), "\# 4 DEADBEEF", 'UnknownRdata->toJson: \\#-формат');
-    $t->throws(fn() => UnknownRdata::fromJson("\# 5 DEADBEEF"), 'UnknownRdata: длина != hex -> исключение');
+    $unkBack = UnknownRdata::fromText("\# 4 DEADBEEF");
+    $t->eq($unkBack->raw, "\xDE\xAD\xBE\xEF", 'UnknownRdata::fromText: \\#-формат');
+    $t->eq($unkBack->toText(), "\# 4 DEADBEEF", 'UnknownRdata->toText: \\#-формат');
+    $t->throws(fn() => UnknownRdata::fromText("\# 5 DEADBEEF"), 'UnknownRdata: длина != hex -> исключение');
   }
 }

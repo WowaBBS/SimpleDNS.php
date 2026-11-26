@@ -5,6 +5,7 @@
 
 final class DnsQuestion
 {
+  use JsonPacket;
   public function __construct(
     public string $name,
     public int    $type,
@@ -42,21 +43,20 @@ final class DnsQuestion
 //****************************************************************
 // Json
 
-  public function toJson(): array
+  public function writeToJson(JsonWriter $w): void
   {
-    return [
-      'Name' => NameCodec  ::toPresentation ($this->name),
-      'Type' => DnsMessage ::typeName       ($this->type),
-    ];
+    $w->openObject();
+    $w->put('Name', NameCodec  ::toPresentation($this->name));
+    $w->put('Type', DnsMessage ::typeName      ($this->type));
+    $w->close();
   }
 
-  public static function fromJson(array $j): self
+  public static function fromJsonReader(JsonReader $j): self
   {
-    if (!isset($j['Name'], $j['Type']))
-      throw new RuntimeException('В вопросе нет полей Name/Type');
-    
-    return new self(NameCodec::fromPresentation($j['Name']), DnsMessage::typeFromName($j['Type']));
+    return new self(
+      NameCodec  ::fromPresentation($j->str('Name')),
+      DnsMessage ::typeFromName    ($j->str('Type')),
+    );
   }
-
 //****************************************************************
 }

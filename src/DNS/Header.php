@@ -6,6 +6,7 @@
 final class DnsHeader
 {
   use Packet; // deserialize(string $msg, int $off = 0, ?int $rdLen = null): self
+  use JsonPacket;
 
   private const RCODES = [
     0 => 'NOERROR', 1 => 'FORMERR', 2 => 'SERVFAIL', 3 => 'NXDOMAIN',
@@ -111,31 +112,44 @@ final class DnsHeader
 //****************************************************************
 // Json
 
-  public function toJson(): array
+  public function writeToJson(JsonWriter $w): void
   {
-    return [
-      'ID'     => $this->id,
-      'Status' => $this->rcode,
-      'TC'     => $this->tc,
-      'RD'     => $this->rd,
-      'RA'     => $this->ra,
-      'AD'     => $this->ad,
-      'CD'     => $this->cd,
-    ];
+    $w->openObject();
+    $this->writeJsonFields($w);
+    $w->close();
   }
 
-  public static function fromJson(array $j): self
+  /** Поля заголовка без своего объекта: DnsMessage пишет их в корень */
+  public function writeJsonFields(JsonWriter $w): void
+  {
+    $w->put('ID'    , $this->id    );
+    $w->put('QR'    , $this->qr    );
+    $w->put('OpCode', $this->opcode);
+    $w->put('AA'    , $this->aa    );
+    $w->put('TC'    , $this->tc    );
+    $w->put('RD'    , $this->rd    );
+    $w->put('RA'    , $this->ra    );
+    $w->put('Z'     , $this->z     );
+    $w->put('AD'    , $this->ad    );
+    $w->put('CD'    , $this->cd    );
+    $w->put('Status', $this->rcode );
+  }
+
+  public static function fromJsonReader(JsonReader $j): self
   {
     return new self(
-      id:    (int)($j['ID'     ] ?? 0),
-      rcode: (int)($j['Status' ] ?? throw new RuntimeException('В JSON нет поля Status')),
-      tc:   (bool)($j['TC'     ] ?? false),
-      rd:   (bool)($j['RD'     ] ?? false),
-      ra:   (bool)($j['RA'     ] ?? false),
-      ad:   (bool)($j['AD'     ] ?? false),
-      cd:   (bool)($j['CD'     ] ?? false),
+      id     : $j->intOr ('ID'    , 0    ),
+      qr     : $j->boolOr('QR'    , false),
+      opcode : $j->intOr ('OpCode', 0    ),
+      aa     : $j->boolOr('AA'    , false),
+      tc     : $j->boolOr('TC'    , false),
+      rd     : $j->boolOr('RD'    , false),
+      ra     : $j->boolOr('RA'    , false),
+      z      : $j->boolOr('Z'     , false),
+      ad     : $j->boolOr('AD'    , false),
+      cd     : $j->boolOr('CD'    , false),
+      rcode  : $j->int   ('Status'       ),
     );
   }
-
 //****************************************************************
 }

@@ -46,12 +46,12 @@ final class CaaRecord extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string
+  public function toText(): string
   {
     return sprintf('%d %s "%s"', $this->flags, $this->tag, StrCodec::escape($this->value));
   }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     if (!preg_match('/^(\d+)\s+(\S+)\s+"((?:[^"\\\\]|\\\\.)*)"$/', trim($data), $m))
       throw new RuntimeException("Некорректный CAA: $data");
@@ -63,7 +63,7 @@ final class CaaRecord extends DnsRdata
   static function testJson(TestRunner $t)
   {
     // CAA roundtrip
-    $caaJ = CaaRecord::fromJson('0 issue "letsencrypt.org"');
-    $t->eq([$caaJ->flags, $caaJ->tag, $caaJ->value], [0, 'issue', 'letsencrypt.org'], 'CaaRecord::fromJson');
+    $caaJ = CaaRecord::fromText('0 issue "letsencrypt.org"');
+    $t->eq([$caaJ->flags, $caaJ->tag, $caaJ->value], [0, 'issue', 'letsencrypt.org'], 'CaaRecord::fromText');
   }
 }

@@ -24,6 +24,11 @@ NamedRdata    ::test($t); // имена внутри RDATA с указателями
 OptRecord     ::test($t); // OPT / EDNS
 RdataRegistry ::test($t); // реестр типов
 
+/* ---------- JSON-слой ---------- */
+JsonReader    ::test($t); // чтение: типы, пути, значения по умолчанию
+JsonWriter    ::test($t); // запись: запятые, пустые контейнеры, поток
+StrCodec      ::test($t); // экранирование презентационных строк
+
 /* ---------- JSON (RFC 8427) ---------- */
 NameCodec     ::testJson($t); // имена в презентационном виде
 DnsRdata      ::testJson($t); // Data: текстовый вид RDATA

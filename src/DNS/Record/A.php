@@ -29,9 +29,9 @@ final class ARecord extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string { return $this->ip; }
+  public function toText(): string { return $this->ip; }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     $bin = inet_pton(trim($data)) ?: throw new RuntimeException("Некорректный IPv4: $data");
     return new static(inet_ntop($bin));

@@ -46,12 +46,12 @@ final class MxRecord extends DnsRdata
 //****************************************************************
 // Json
 
-  public function toJson(): string
+  public function toText(): string
   {
     return $this->pref . ' ' . NameCodec::toPresentation($this->exchange);
   }
 
-  public static function fromJson(string $data): static
+  public static function fromText(string $data): static
   {
     if (!preg_match('/^(\d+)\s+(\S+)$/', trim($data), $m))
       throw new RuntimeException("Некорректный MX: $data");
