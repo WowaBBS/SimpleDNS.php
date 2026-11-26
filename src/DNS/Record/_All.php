@@ -9,5 +9,6 @@ include_once 'Soa.php'      ;
 include_once 'Srv.php'      ;
 include_once 'Caa.php'      ;
 include_once 'Opt.php'      ;
+include_once 'Rrsig.php'    ;
 include_once 'Unknown.php'  ;
 include_once 'Registry.php' ;

@@ -16,6 +16,7 @@ final class RdataRegistry
      28 => AaaaRecord  ::class,
      33 => SrvRecord   ::class,
      41 => OptRecord   ::class,
+     46 => RrsigRecord ::class,
     257 => CaaRecord   ::class,
   ];
 

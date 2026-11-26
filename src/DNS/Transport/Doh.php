@@ -77,10 +77,17 @@ final class DohTransport implements DnsTransport
 
     $question = $request->questions[0];
 
-    return $this->endpoint . '?' . http_build_query([
+    $params = [
       'name' => $question->name === '' ? '.' : $question->name,
       'type' => DnsMessage::typeName($question->type),
-    ]);
+    ];
+
+    // DNSSEC в JSON-канале запрашивается параметром do=1,
+    // а не битом в OPT, как в wire-запросе
+    if ($request->additional->opt()?->do)
+      $params['do'] = 1;
+
+    return $this->endpoint . '?' . http_build_query($params);
   }
 
   public function exchangeJson(DnsMessage $request): DnsMessage
@@ -137,6 +144,11 @@ final class DohTransport implements DnsTransport
 
     $t->eq((new DohTransport('https://cf/dns-query'))->jsonUrl($query),
       'https://cf/dns-query?name=example.com&type=A', 'DohTransport: JSON-URL в режиме name/type');
+
+    $t->eq((new DohTransport('https://cf/dns-query'))->jsonUrl(DnsMessage::query('example.com', 1, dnssec: true)),
+      'https://cf/dns-query?name=example.com&type=A&do=1', 'DohTransport: DNSSEC добавляет do=1 в JSON-URL');
+    $t->eq((new DohTransport('https://cf/dns-query'))->jsonUrl(DnsMessage::query('example.com', 1)),
+      'https://cf/dns-query?name=example.com&type=A', 'DohTransport: без DNSSEC параметра do нет');
 
     $get  = new DohTransport('https://cf/dns-query', jsonMode: DohTransport::JSON_GET);
     $want = 'https://cf/dns-query?dns=' . rtrim(strtr(base64_encode($query->serialize()), '+/', '-_'), '=');

@@ -52,6 +52,7 @@ abstract class DnsRdata
     SrvRecord    ::test($t);
     CaaRecord    ::test($t);
     UnknownRdata ::test($t);
+    RrsigRecord  ::test($t);
 
     /* ---------- RDATA: ридер ловит выход за RDLENGTH ---------- */
     

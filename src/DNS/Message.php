@@ -11,7 +11,7 @@ final class DnsMessage
 
   private const TYPE_NAMES = [
     1 => 'A', 2 => 'NS', 5 => 'CNAME', 6 => 'SOA', 12 => 'PTR',
-    15 => 'MX', 16 => 'TXT', 28 => 'AAAA', 33 => 'SRV', 41 => 'OPT', 257 => 'CAA',
+    15 => 'MX', 16 => 'TXT', 28 => 'AAAA', 33 => 'SRV', 41 => 'OPT', 46 => 'RRSIG', 257 => 'CAA',
   ];
 
   public const CLASS_IN = 1;
@@ -94,8 +94,9 @@ final class DnsMessage
       return (int)$name;
     
     $flip = array_flip(self::TYPE_NAMES);
-    if (isset($flip[$name]))
-      return $flip[$name];
+    $upper = strtoupper($name);
+    if (isset($flip[$upper]))
+      return $flip[$upper];
     
     if (preg_match('/^TYPE(\d+)$/i', $name, $m)) 
       return (int)$m[1];
@@ -237,6 +238,8 @@ final class DnsMessage
 
     $t->eq(DnsMessage::typeFromName('MX'     ), 15, 'typeFromName: MX -> 15');
     $t->eq(DnsMessage::typeFromName('A'      ),  1, 'typeFromName: A -> 1');
+    $t->eq(DnsMessage::typeFromName('a'      ),  1, 'typeFromName: a -> 1 (регистр не важен)');
+    $t->eq(DnsMessage::typeFromName('rrsig'  ), 46, 'typeFromName: rrsig -> 46');
     $t->eq(DnsMessage::typeFromName('TYPE65' ), 65, 'typeFromName: TYPE65 -> 65');
     $t->eq(DnsMessage::typeFromName('65'     ), 65, 'typeFromName: число -> 65');
     $t->eq(DnsMessage::typeName(DnsMessage::typeFromName('SRV')), 'SRV', 'typeName/typeFromName согласованы');
@@ -311,6 +314,7 @@ final class DnsMessage
       [6,   new SoaRecord   ('ns.example.com', 'admin.example.com', 1, 2, 3, 4, 5)],
       [33,  new SrvRecord   (1, 5, 5061, 'sip.example.com')],
       [257, new CaaRecord   (0, 'issue', 'letsencrypt.org')],
+      [46,  new RrsigRecord (1, 13, 2, 300, 2, 1, 34505, 'example.com', "\x01\x02")],
       [999, new UnknownRdata("\xDE\xAD\xBE\xEF")],
     ] as [$type, $rdata])
     {
