@@ -24,6 +24,8 @@ abstract class MulticastTransport implements DnsTransport
   public function name(): string { return $this->scheme() . "://{$this->group}:{$this->port}"; }
 
   /** √отовый запрос по имени (правила протокола уже применены) */
+  //TODO: здесь та же ручна€ сборка сообщени€, что в NbnsClient::packet() -
+  // см. вариант B (DnsBuilder::message() без EDNS и флагов) в TODO там
   public function request(string $name, int $type = 1): DnsMessage
   {
     $message = new DnsMessage(new DnsHeader(id: $this->id()));

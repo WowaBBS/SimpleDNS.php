@@ -90,6 +90,17 @@ liveMulticast('mdns' , new MdnsTransport(timeout: 3), '_services._dns-sd._udp.lo
 liveMulticast('llmnr', new LlmnrTransport(timeout: 3), gethostname() ?: 'localhost', 1);
 
 /* ------------------------------------------------------------
+ * NetBIOS: широковещательный запрос имени этого хоста
+ * ------------------------------------------------------------ */
+
+try
+{
+  $ips = (new NbnsClient(timeout: 1))->resolve(gethostname());
+  echo 'NOTE  nbns : ', $ips === [] ? 'нет ответа на broadcast' : implode(', ', $ips), "\n";
+}
+catch (Throwable $e) { echo 'NOTE  nbns : ', $e->getMessage(), "\n"; }
+
+/* ------------------------------------------------------------
  * Известные ограничения (не проверки, а факты провайдеров)
  * ------------------------------------------------------------ */
 
