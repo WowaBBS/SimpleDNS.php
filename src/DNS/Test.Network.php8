@@ -1,0 +1,80 @@
+<?
+include_once '../_Cli.php' ;
+include_once '_All.php';
+include_once '../Debug/Test.php';
+
+/* ============================================================
+ * Живые проверки транспортов - нужна сеть.
+ * В обычный прогон (Test.php8) не входят: там всё офлайн.
+ * ============================================================ */
+
+$t = new TestRunner();
+
+function liveWire(TestRunner $t, string $label, DnsTransport $transport, string $domain = 'example.com', int $type = 1): void
+{
+  try
+  {
+    $reply = $transport->exchange(DnsMessage::query($domain, $type));
+    $t->eq($reply->rcode(), 0, "$label: NOERROR");
+    $t->ok(count($reply->answers) > 0, "$label: есть записи");
+  }
+  catch (Throwable $e) { $t->ok(false, "$label: " . $e->getMessage()); }
+}
+
+function liveJson(TestRunner $t, string $label, DohTransport $transport, string $domain = 'example.com', int $type = 1): void
+{
+  try
+  {
+    $reply = $transport->exchangeJson(DnsMessage::query($domain, $type));
+    $t->eq($reply->rcode(), 0, "$label: NOERROR");
+    $t->ok(count($reply->answers) > 0, "$label: есть записи");
+  }
+  catch (Throwable $e) { $t->ok(false, "$label: " . $e->getMessage()); }
+}
+
+/* ---------- DoH: wire, POST application/dns-message ---------- */
+liveWire($t, 'DoH cloudflare', new DohTransport('https://cloudflare-dns.com/dns-query'));
+liveWire($t, 'DoH google'    , new DohTransport('https://dns.google/dns-query'));
+liveWire($t, 'DoH adguard'   , new DohTransport('https://dns.adguard-dns.com/dns-query'));
+liveWire($t, 'DoH dns.sb'    , new DohTransport('https://dns.sb/dns-query'));
+
+/* ---------- DoH: JSON, ?name=&type= и Accept: application/dns-json ---------- */
+liveJson($t, 'JSON cloudflare', new DohTransport('https://cloudflare-dns.com/dns-query'));
+liveJson($t, 'JSON 1.1.1.1'   , new DohTransport('https://1.1.1.1/dns-query'));
+liveJson($t, 'JSON google'    , new DohTransport('https://dns.google/resolve'));
+liveJson($t, 'JSON dns.sb'    , new DohTransport('https://dns.sb/dns-query'), 'github.com'); // без DNSSEC-подписи
+
+/* ---------- Классические транспорты ---------- */
+liveWire($t, 'UDP 1.1.1.1'   , new UdpTransport('1.1.1.1'));
+liveWire($t, 'TCP 1.1.1.1'   , new TcpTransport('1.1.1.1'));
+liveWire($t, 'DoT dns.google', new DotTransport('dns.google'));
+
+/* ------------------------------------------------------------
+ * Известные ограничения (не проверки, а факты провайдеров)
+ * ------------------------------------------------------------ */
+
+echo "\n--- известные ограничения ---\n";
+
+// Quad9 отвечает 505 на HTTP/1.1: ему нужен HTTP/2, а потоки PHP его не умеют
+try
+{
+  (new DohTransport('https://dns.quad9.net/dns-query'))->exchange(DnsMessage::query('example.com', 1));
+  echo "NOTE  quad9: доступен по HTTP/1.1\n";
+}
+catch (Throwable $e)
+{
+  echo "NOTE  quad9: ", $e->getMessage(), "\n";
+}
+
+// dns.sb для подписанных зон отдаёт RRSIG в презентационном виде, а не как \# (RFC 3597)
+try
+{
+  (new DohTransport('https://dns.sb/dns-query'))->exchangeJson(DnsMessage::query('example.com', 1));
+  echo "NOTE  dns.sb: подписанные зоны разбираются\n";
+}
+catch (Throwable $e)
+{
+  echo "NOTE  dns.sb (example.com): ", $e->getMessage(), "\n";
+}
+
+$t->summary();
