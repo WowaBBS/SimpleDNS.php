@@ -25,6 +25,14 @@ NamedRdata    ::test($t); // имена внутри RDATA с указател€ми
 OptRecord     ::test($t); // OPT / EDNS
 RdataRegistry ::test($t); // реестр типов
 
+/* ---------- “ранспорты ---------- */
+UdpTransport     ::test($t); // UDP: параметры и fallback на TCP
+TcpTransport     ::test($t); // TCP: кадр с префиксом длины
+DotTransport     ::test($t); // DoT: TLS поверх TCP
+DoqTransport     ::test($t); // DoQ: заготовка, QUIC по€вл€етс€ с php-quic
+DohTransport     ::test($t); // DoH: адрес и параметры
+TransportFactory ::test($t); // выбор транспорта по URL
+
 /* ---------- —екции-списки ---------- */
 DnsList        ::test($t); // поведение массива, бинарна€ и JSON-секци€
 DnsQuestionList::test($t); // выборки по вопросам

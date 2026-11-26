@@ -3,28 +3,36 @@ include_once '../_Cli.php' ;
 include_once '_All.php';
 
 /* ============================================================
- * Пример использования
+ * Один и тот же запрос через разные транспорты
  * ============================================================ */
- 
-$list = [
-  ['yandex.ru'      ,  1],
-  ['gmail.com'      , 15],
-  ['cloudflare.com' , 28],
+
+$transports = [
+  new DohTransport()                  , // DoH (RFC 8484), HTTPS 443
+  new UdpTransport ('1.1.1.1')        , // UDP, 53
+  new TcpTransport ('1.1.1.1')        , // TCP, 53
+  new DotTransport ('one.one.one.one'), // DoT, 853
 ];
 
-foreach ($list as [$domain, $type])
+foreach ($transports as $transport)
 {
-  echo "--- $domain (" . DnsMessage::typeName($type) . ") ---\n";
-  $reply = DohTransport::exchange(DnsMessage::query($domain, $type));
-  echo 'rcode: ', DnsHeader::rcodeName($reply->rcode()), "\n";
-  foreach ($reply->answers as $r)
-    echo '  ', $r, "\n";
-  
+  echo "--- ", $transport->name(), " ---\n";
+
+  try
+  {
+    $reply = $transport->exchange(DnsMessage::query('example.com', 1));
+
+    echo 'rcode: ', DnsHeader::rcodeName($reply->rcode()), "\n";
+    foreach ($reply->answers as $record)
+      echo '  ', $record, "\n";
+  }
+  catch (Throwable $e)
+  {
+    echo '  ошибка: ', $e->getMessage(), "\n";
+  }
+
   echo "\n";
 }
 
-// Ручная сборка тоже работает:
-$custom = new DnsMessage(new DnsHeader(id: 1234, rd: true));
-$custom->questions[] = new DnsQuestion('_dmarc.yandex.ru', 16);
-foreach (DohTransport::exchange($custom)->answers as $r)
-  echo $r, "\n";
+// Выбор транспорта по адресу
+$dns = TransportFactory::fromUrl('udp://1.1.1.1');
+echo $dns->name(), "\n";
