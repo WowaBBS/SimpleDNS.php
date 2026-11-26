@@ -70,6 +70,26 @@ liveWire($t, 'TCP 1.1.1.1'   , new TcpTransport('1.1.1.1'));
 liveWire($t, 'DoT dns.google', new DotTransport('dns.google'));
 
 /* ------------------------------------------------------------
+ * mDNS / LLMNR: отвечает ли кто-то в этой сети
+ * ------------------------------------------------------------ */
+
+function liveMulticast(string $label, MulticastTransport $transport, string $name, int $type): void
+{
+  try
+  {
+    $replies = $transport->responses($transport->request($name, $type));
+    $merged  = $replies === [] ? null : MulticastTransport::mergeMessages($replies);
+
+    printf("NOTE  %-6s %-30s -> ответов %d, записей %d\n", $label, $name,
+      count($replies), $merged ? count($merged->answers) + count($merged->additional) : 0);
+  }
+  catch (Throwable $e) { printf("NOTE  %-6s %-30s -> %s\n", $label, $name, $e->getMessage()); }
+}
+
+liveMulticast('mdns' , new MdnsTransport(timeout: 3), '_services._dns-sd._udp.local', 12);
+liveMulticast('llmnr', new LlmnrTransport(timeout: 3), gethostname() ?: 'localhost', 1);
+
+/* ------------------------------------------------------------
  * Известные ограничения (не проверки, а факты провайдеров)
  * ------------------------------------------------------------ */
 

@@ -1,0 +1,105 @@
+<?
+include_once '../_Cli.php' ;
+include_once '_All.php';
+
+/* ============================================================
+ * Что нашлось в локальной сети по mDNS.
+ *
+ *   php Example.Mdns.php8                     - все объявленные сервисы
+ *   php Example.Mdns.php8 _http._tcp.local    - один тип сервиса
+ *   php Example.Mdns.php8 --host              - только адрес этого хоста
+ *
+ * Две фазы, как в DNS-SD:
+ *   1) PTR _services._dns-sd._udp.local      -> типы сервисов
+ *   2) PTR <тип> + SRV/TXT/A в additional    -> экземпляры и адреса
+ * ============================================================ */
+
+$mdns   = new MdnsTransport(timeout: 3);
+$arg    = $argv[1] ?? null;
+$types  = [];
+
+if ($arg === '--host')
+{
+  $name = gethostname();
+
+  try
+  {
+    $reply = $mdns->ask("$name.local", 1);
+    foreach ($reply->answers as $record) echo $record, "\n";
+  }
+  catch (Throwable $e) { echo "нет ответа: ", $e->getMessage(), "\n"; }
+
+  exit(0);
+}
+
+if ($arg !== null)
+  $types[] = $arg;
+else
+{
+  try
+  {
+    foreach ($mdns->ask('_services._dns-sd._udp.local', 12)->answers as $record)
+      if ($record->rdata instanceof PtrRecord)
+        $types[] = $record->rdata->target;
+  }
+  catch (Throwable $e) { echo "mDNS не ответил: ", $e->getMessage(), "\n"; }
+}
+
+$types = array_values(array_unique($types));
+sort($types);
+
+if ($types === [])
+{
+  echo "Ничего не найдено: в этой сети никто не ответил на mDNS-запрос.\n";
+  exit(0);
+}
+
+echo 'типов сервисов: ', count($types), "\n";
+
+foreach ($types as $type)
+{
+  echo "\n=== $type ===\n";
+
+  try
+  {
+    $reply = $mdns->ask($type, 12);
+  }
+  catch (Throwable $e)
+  {
+    echo '  нет ответа: ', $e->getMessage(), "\n";
+    continue;
+  }
+
+  $instances = $reply->answers->byType(12);
+
+  if ($instances === [])
+    echo "  ответ есть, но PTR-записей нет\n";
+
+  foreach ($instances as $pointer)
+  {
+    $instance = $pointer->rdata->target;
+    printf("  %s\n", $instance);
+
+    $service = $reply->additional->find($instance, 33);
+
+    if ($service === null)
+    {
+      echo "    SRV не пришёл\n";
+      continue;
+    }
+
+    $addresses = [];
+
+    foreach ([1, 28] as $addressType)
+      foreach ($reply->additional->byType($addressType) as $address)
+        if (strcasecmp($address->name, $service->rdata->target) === 0)
+          $addresses[] = $address->rdata->ip;
+
+    printf("    %s:%d  %s\n", $service->rdata->target, $service->rdata->port,
+      $addresses === [] ? 'адрес не пришёл' : implode(', ', $addresses));
+
+    $txt = $reply->additional->find($instance, 16);
+    if ($txt !== null)
+      echo '    TXT: ', implode(' | ', $txt->rdata->texts), "\n";
+  }
+}

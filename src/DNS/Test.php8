@@ -30,6 +30,9 @@ UdpTransport     ::test($t); // UDP: параметры и fallback на TCP
 TcpTransport     ::test($t); // TCP: кадр с префиксом длины
 DotTransport     ::test($t); // DoT: TLS поверх TCP
 DoqTransport     ::test($t); // DoQ: заготовка, QUIC появляется с php-quic
+MulticastTransport::test($t); // объединение ответов от разных хостов
+MdnsTransport    ::test($t); // mDNS: ID=0, .local, QU-бит
+LlmnrTransport   ::test($t); // LLMNR: без EDNS, ID не нулевой
 DohTransport     ::test($t); // DoH: адрес и параметры
 TransportFactory ::test($t); // выбор транспорта по URL
 
